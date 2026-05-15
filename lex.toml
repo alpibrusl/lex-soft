@@ -1,0 +1,9 @@
+[package]
+name    = "lex-soft"
+version = "0.1.0"
+description = "Pure-lex agent runtime — re-architecture of `soft`."
+license = "EUPL-1.2"
+
+[dependencies]
+lex-schema = { path = "../lex-schema" }
+lex-web    = { path = "../lex-web" }

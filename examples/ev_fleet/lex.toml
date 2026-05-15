@@ -1,0 +1,8 @@
+[package]
+name    = "ev_fleet"
+version = "0.1.0"
+
+[dependencies]
+lex-soft   = { path = "../.." }
+lex-web    = { path = "../../../lex-web" }
+lex-schema = { path = "../../../lex-schema" }
