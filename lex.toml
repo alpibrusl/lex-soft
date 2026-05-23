@@ -1,9 +1,11 @@
 [package]
-name    = "lex-soft"
-version = "0.1.0"
-description = "Pure-lex agent runtime — re-architecture of `soft`."
-license = "EUPL-1.2"
+name        = "lex-soft"
+version     = "0.2.0"
+description = "LLM-agent platform — registry, relationship graph, resolver, runner."
+license     = "EUPL-1.2"
 
 [dependencies]
 lex-schema = { path = "../lex-schema" }
 lex-web    = { path = "../lex-web" }
+lex-llm    = { path = "../lex-llm" }
+lex-agent  = { path = "../lex-agent" }

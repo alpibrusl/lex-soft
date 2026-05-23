@@ -1,150 +1,128 @@
-# main.lex — boot the EV-fleet.
+# main.lex — EV fleet demo boot.
 #
-# Wires lex-web + lex-soft + four agents into one `lex serve`.
+# Starts one lex-web server per agent kind (or all on one port for demo).
+# Each agent's inbox is mounted at POST /agents/:agent_id/inbox.
 #
-# Run:
-#   lex run --allow-effects io,net,time,sql,fs_write main.lex main
+# Environment variables:
+#   DB_PATH         SQLite file path        (default: ev_fleet.db)
+#   OLLAMA_URL      Ollama base URL          (default: http://localhost:11434)
+#   OLLAMA_MODEL    Model name               (default: gemma4:latest)
+#   TMS_URL         lex-tms service URL      (default: http://localhost:8200)
+#   CHARGE_URL      lex-charge service URL   (default: http://localhost:8000)
+#   PORT            HTTP listen port         (default: 8100)
 
-import "std.net"      as net
-import "std.io"       as io
-import "std.sql"      as sql
-import "std.str"      as str
-import "std.int"      as int
-import "std.datetime" as datetime
-import "std.crypto"   as crypto
-
-import "lex-web/ctx"      as ctx
+import "std.net" as net
+import "std.sql" as sql
+import "std.str" as str
+import "std.int" as int
+import "std.env" as env
+import "std.io" as io
+import "std.list" as list
+import "std.bytes" as bytes
+import "lex-schema/json_value" as jv
+import "lex-web/router" as router
+import "lex-web/ctx" as ctx
 import "lex-web/response" as resp
-import "lex-web/router"   as router
-import "lex-web/body"     as body
+import "lex-llm/src/providers" as providers
+import "lex-soft/src/migrate" as migrate
+import "lex-soft/src/runner" as runner
+import "./seed" as seed
+import "./agents/truck" as truck_agent
+import "./agents/depot" as depot_agent
+import "./agents/tms" as tms_agent
 
-import "lex-soft/agent"        as soft_agent
-import "lex-soft/runner"       as runner
-import "lex-soft/migrate"      as migrate
-import "lex-soft/state_store"  as state_store
-import "lex-soft/trace"        as trace
-import "lex-soft/message"      as message
-import "lex-soft/a2a"          as a2a
-
-import "./peers"             as peers
-import "./agents/vehicle"    as vehicle
-import "./agents/depot"      as depot
-import "./agents/pv"         as pv
-import "./agents/tms"        as tms
-
-fn agent_defs() -> List[soft_agent.AgentDef] {
-  [
-    { name: vehicle.name(),
-      initial_state_json: vehicle.initial_state_json(),
-      dispatch: vehicle.dispatch_and_gate },
-    { name: depot.name(),
-      initial_state_json: depot.initial_state_json(),
-      dispatch: depot.dispatch_and_gate },
-    { name: pv.name(),
-      initial_state_json: pv.initial_state_json(),
-      dispatch: pv.dispatch_and_gate },
-    { name: tms.name(),
-      initial_state_json: tms.initial_state_json(),
-      dispatch: tms.dispatch_and_gate },
-  ]
+fn get_env(key :: Str, default :: Str) -> [env] Str {
+  match env.get(key) {
+    Some(v) => if str.is_empty(str.trim(v)) { default } else { v },
+    None    => default,
+  }
 }
 
-# A second depot peer (with smaller budget) for the fallback path.
-fn depot2_def() -> soft_agent.AgentDef {
-  { name: "depot2",
-    initial_state_json: "current_kw=180.0;budget_kw=200.0;pv_kw=5.0;requested_kw=50.0",
-    dispatch: depot.dispatch_and_gate }
+fn db_path()     -> [env] Str { get_env("DB_PATH",      "ev_fleet.db") }
+fn ollama_url()  -> [env] Str { get_env("OLLAMA_URL",   "http://localhost:11434") }
+fn model_name()  -> [env] Str { get_env("OLLAMA_MODEL", "gemma4:latest") }
+fn tms_url()     -> [env] Str { get_env("TMS_URL",      "http://localhost:8200") }
+fn charge_url()  -> [env] Str { get_env("CHARGE_URL",   "http://localhost:8000") }
+fn serve_port()  -> [env] Int {
+  match str.to_int(get_env("PORT", "8100")) { Some(n) => n, None => 8100 }
 }
 
-fn new_run_id() -> [time, rand] Str {
-  # 16 hex chars from a SHA-256 of (now, random) — opaque, sortable enough
-  let now := datetime.now_ms()
-  let h   := crypto.sha256_hex(str.concat("run-", int.to_str(now)))
-  str.substring(h, 0, 16)
-}
-
-fn build_router(deps :: soft_agent.Deps) -> router.Router {
-  let r0 := router.new()
-  let r1 := list.fold(agent_defs(), r0, fn (r :: router.Router, d :: soft_agent.AgentDef) -> router.Router {
-    soft_agent.mount(r, d, deps)
-  })
-  let r2 := soft_agent.mount(r1, depot2_def(), deps)
-  r2 |> fn (r :: router.Router) -> router.Router {
-          router.route(r, "POST", "/agents/pv/tick", make_tick_handler(deps))
-        }
-     |> fn (r :: router.Router) -> router.Router {
-          router.route(r, "GET", "/traces", make_traces_handler(deps))
-        }
-     |> fn (r :: router.Router) -> router.Router {
-          router.route(r, "GET", "/health", fn (_c :: ctx.Ctx) -> resp.Response {
-            resp.json("{\"ok\":true}")
-          })
-        }
-}
-
-fn make_tick_handler(deps :: soft_agent.Deps) ->
-  (ctx.Ctx) -> [io, time, sql, net, fs_write] resp.Response {
-  fn (_c :: ctx.Ctx) -> [io, time, sql, net, fs_write] resp.Response {
-    let msg := message.new("runner", "Tick", "{}")
-    match runner.step(deps.db, deps.run_id, pv.name(),
-                      pv.initial_state_json(), pv.dispatch_and_gate,
-                      deps.peers, msg) {
-      Err(e) => resp.internal_error_msg(e),
-      Ok(_)  => resp.json("{\"ticked\":true}"),
+fn inbox_handler(db :: sql.Db, def :: runner.AgentDef) -> fn(Request) -> [io, time, sql, concurrent, net, crypto, random, fs_read, fs_write] Response {
+  fn (req :: Request) -> [io, time, sql, concurrent, net, crypto, random, fs_read, fs_write] Response {
+    let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
+    match bytes.to_str(raw.body) {
+      Err(_)       => { status: 400, body: BodyStr("bad body"), headers: [] },
+      Ok(msg_json) => {
+        let answer := runner.step(db, def, msg_json)
+        { status: 200, body: BodyStr(jv.stringify(JObj([("reply", JStr(answer))]))), headers: [("content-type", "application/json")] }
+      },
     }
   }
 }
 
-fn make_traces_handler(deps :: soft_agent.Deps) ->
-  (ctx.Ctx) -> [io, time, sql, fs_write] resp.Response {
-  fn (c :: ctx.Ctx) -> [io, time, sql, fs_write] resp.Response {
-    let agent := ctx.query_param_or(c, "agent", "vehicle")
-    match trace.for_agent(deps.db, agent, 100) {
-      Err(e)   => resp.internal_error_msg(e),
-      Ok(rows) => resp.json(serialize_rows(rows)),
-    }
-  }
+fn mount_agent(r :: router.Router, db :: sql.Db, def :: runner.AgentDef) -> router.Router {
+  let path := str.concat("/agents/", str.concat(def.id, "/inbox"))
+  router.post(r, path, inbox_handler(db, def))
 }
 
-fn serialize_rows(
-  rows :: List[{ ts_ms :: Int, kind :: Str, target :: Str, input_json :: Str, output_json :: Str, error :: Str }],
-) -> Str {
-  let body := list.fold(rows, "", fn (acc :: Str, r) -> Str {
-    let row := str.concat("{\"ts_ms\":", int.to_str(r.ts_ms))
-               |> fn (s :: Str) -> Str { str.concat(s, ",\"kind\":\"") }
-               |> fn (s :: Str) -> Str { str.concat(s, r.kind) }
-               |> fn (s :: Str) -> Str { str.concat(s, "\",\"target\":\"") }
-               |> fn (s :: Str) -> Str { str.concat(s, r.target) }
-               |> fn (s :: Str) -> Str { str.concat(s, "\"}") }
-    if str.is_empty(acc) { row } else { str.concat(acc, str.concat(",", row)) }
-  })
-  str.concat("[", str.concat(body, "]"))
-}
+fn main() -> [net, io, env, time, crypto, random, sql, fs_read, fs_write, concurrent] Unit {
+  let port  := serve_port()
+  let db    := sql.open(db_path())
+  let model := model_name()
+  let o_url := ollama_url()
+  let t_url := tms_url()
+  let c_url := charge_url()
 
-fn dispatch_request(
-  rtr :: router.Router,
-  req :: ctx.RawRequest,
-) -> [io, time, sql, net, fs_write] resp.Response {
-  router.dispatch(rtr, req)
-}
+  let _ := io.print("=== EV Fleet Platform ===")
+  let _ := io.print(str.concat("  port:    ", int.to_str(port)))
+  let _ := io.print(str.concat("  model:   ", model))
+  let _ := io.print(str.concat("  tms:     ", t_url))
+  let _ := io.print(str.concat("  charge:  ", c_url))
 
-fn main() -> [net, io, time, sql, fs_write, rand] Nil {
-  match sql.open("lex-soft.sqlite") {
-    Err(e) => io.print(str.concat("failed to open db: ", sql.error_msg(e))),
-    Ok(db) => {
-      match migrate.run(db) {
-        Err(e) => io.print(str.concat("migration failed: ", sql.error_msg(e))),
-        Ok(_)  => {
-          let deps := { db: db,
-                        run_id: new_run_id(),
-                        peers: peers.local() }
-          let rtr := build_router(deps)
-          let _ := io.print("lex-soft listening on :8080")
-          net.serve_fn(8080, fn (req :: ctx.RawRequest) -> [io, time, sql, net, fs_write] resp.Response {
-            dispatch_request(rtr, req)
-          })
-        },
+  match migrate.run(db) {
+    Err(e) => io.print(str.concat("FATAL migrate: ", e)),
+    Ok(_) => {
+      match seed.run(db) {
+        Err(e) => io.print(str.concat("WARN seed: ", e)),
+        Ok(_)  => io.print("  registry seeded."),
       }
+
+      let provider := providers.ollama_at(o_url)
+
+      # Build all agent defs
+      let truck_defs := list.map(list.range(1, 21), fn (n :: Int) -> runner.AgentDef {
+        truck_agent.make_def(
+          str.concat("truck-", if n < 10 { str.concat("0", int.to_str(n)) } else { int.to_str(n) }),
+          t_url, provider, model
+        )
+      })
+      let depot_defs := [
+        depot_agent.make_def("depot-north", c_url, provider, model),
+        depot_agent.make_def("depot-south", c_url, provider, model),
+        depot_agent.make_def("depot-east",  c_url, provider, model),
+        depot_agent.make_def("depot-west",  c_url, provider, model),
+      ]
+      let tms_defs := [
+        tms_agent.make_def("tms-primary",   t_url, provider, model),
+        tms_agent.make_def("tms-secondary", t_url, provider, model),
+      ]
+
+      let all_defs := list.concat(truck_defs, list.concat(depot_defs, tms_defs))
+
+      # Mount all agents on the router
+      let r := list.fold(all_defs, router.new(), fn (acc :: router.Router, def :: runner.AgentDef) -> router.Router {
+        mount_agent(acc, db, def)
+      })
+
+      let _ := io.print(str.concat("  agents:  ", int.to_str(list.length(all_defs))))
+      let _ := io.print("  ready.")
+
+      let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, crypto, random, fs_read, fs_write] Response {
+        let raw    := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
+        let result := router.dispatch(r, raw)
+        { status: result.status, body: BodyStr(result.body), headers: result.headers }
+      }
+      net.serve_fn(port, handler)
     },
   }
 }

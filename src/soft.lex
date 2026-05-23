@@ -1,15 +1,18 @@
-# soft.lex — facade.
+# soft.lex — public facade for the lex-soft platform.
 #
-# Importing this single module exposes the runtime surface the EV-fleet
-# example uses. Application code can import individual modules directly
-# if it wants narrower effect annotations.
+# Import this file to get the full platform surface:
+#   migrate, registry, relationships, resolver, a2a, state_store, trace, runner.
 
-import "./action"      as action
-import "./message"     as message
-import "./gate"        as gate
-import "./trace"       as trace
-import "./state_store" as state_store
-import "./migrate"     as migrate
-import "./a2a"         as a2a
-import "./runner"      as runner
-import "./agent"       as agent
+import "./migrate"       as migrate
+import "./registry"      as registry
+import "./relationships" as relationships
+import "./resolver"      as resolver
+import "./a2a"           as a2a
+import "./state_store"   as state_store
+import "./trace"         as trace
+import "./runner"        as runner
+
+# Re-export key types for convenience.
+type AgentRef     = registry.AgentRef
+type Relationship = relationships.Relationship
+type AgentDef     = runner.AgentDef

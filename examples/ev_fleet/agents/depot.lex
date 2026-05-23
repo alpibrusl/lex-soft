@@ -1,129 +1,92 @@
-# depot.lex — charging depot.
+# depot.lex — LLM-driven charging depot agent definition.
 #
-# State:    { current_kw, budget_kw, pv_kw, requested_kw }
-# In:       RequestSession, PvUpdate
-# Out:      GrantSession | DenySession (to requester)
-#
-# Mirrors soft/agents/depot.lex. The pure-lex port additionally runs
-# `depot_grid_budget` on the proposed Grant before letting it through.
+# A depot manages a set of chargers. When a truck sends a
+# charging_request it decides whether to accept or deny based on
+# current charger availability and the truck's contract.
 
-import "std.str"   as str
-import "std.float" as float
-import "std.list"  as list
+import "std.str" as str
+import "std.list" as list
+import "std.http" as http
+import "std.bytes" as bytes
+import "lex-schema/json_value" as jv
+import "lex-llm/src/tool" as t
+import "lex-llm/src/providers" as providers
+import "lex-soft/src/runner" as runner
 
-import "lex-soft/action"  as action
-import "lex-soft/message" as message
-import "lex-soft/gate"    as gate
-import "lex-soft/runner"  as runner
-
-import "../specs" as specs
-
-type State = { current_kw :: Float, budget_kw :: Float,
-               pv_kw :: Float, requested_kw :: Float }
-
-fn name() -> Str { "depot" }
-
-fn initial_state_json() -> Str {
-  "current_kw=100.0;budget_kw=200.0;pv_kw=10.0;requested_kw=50.0"
-}
-
-fn decode(s :: Str) -> State {
-  { current_kw:   kv_float(s, "current_kw",   0.0),
-    budget_kw:    kv_float(s, "budget_kw",    0.0),
-    pv_kw:        kv_float(s, "pv_kw",        0.0),
-    requested_kw: kv_float(s, "requested_kw", 0.0) }
-}
-
-fn encode(s :: State) -> Str {
-  str.concat("current_kw=",   float.to_str(s.current_kw))
-  |> fn (x :: Str) -> Str { str.concat(x, ";budget_kw=") }
-  |> fn (x :: Str) -> Str { str.concat(x, float.to_str(s.budget_kw)) }
-  |> fn (x :: Str) -> Str { str.concat(x, ";pv_kw=") }
-  |> fn (x :: Str) -> Str { str.concat(x, float.to_str(s.pv_kw)) }
-  |> fn (x :: Str) -> Str { str.concat(x, ";requested_kw=") }
-  |> fn (x :: Str) -> Str { str.concat(x, float.to_str(s.requested_kw)) }
-}
-
-fn within(cur :: Float, delta :: Float, grid :: Float, pv :: Float) -> Bool {
-  cur + delta <= grid + pv
-}
-
-fn on_request_session(s :: State, m :: message.Message) -> { state :: State, actions :: List[action.Action] } {
-  if within(s.current_kw, s.requested_kw, s.budget_kw, s.pv_kw) {
-    { state: s,
-      actions: [ action.send_a2a(m.from, "GrantSession",
-                                 "{\"charger_id\":\"c-1\",\"power_kw\":50}") ] }
-  } else {
-    { state: s,
-      actions: [ action.send_a2a(m.from, "DenySession",
-                                 "{\"reason\":\"grid_budget\"}") ] }
+fn http_get_json(url :: Str) -> [net, io, proc] jv.Json {
+  match http.get(url) {
+    Err(_) => JObj([("error", JStr("unreachable"))]),
+    Ok(resp) => match bytes.to_str(resp.body) {
+      Err(_) => JObj([("error", JStr("decode error"))]),
+      Ok(body) => match jv.parse(body) {
+        Err(_) => JStr(body),
+        Ok(j)  => j,
+      },
+    },
   }
 }
 
-fn on_pv_update(s :: State, _m :: message.Message) -> { state :: State, actions :: List[action.Action] } {
-  { state: { current_kw: s.current_kw, budget_kw: s.budget_kw,
-             pv_kw: s.pv_kw + 5.0, requested_kw: s.requested_kw },
-    actions: [] }
-}
-
-fn route(s :: State, m :: message.Message) -> { state :: State, actions :: List[action.Action] } {
-  if m.topic == "RequestSession" { on_request_session(s, m) }
-  else if m.topic == "PvUpdate"  { on_pv_update(s, m) }
-  else { { state: s, actions: [] } }
-}
-
-# Gate: only GrantSession needs the budget check. DenySession and
-# PvUpdate-derived no-ops trivially Allow.
-fn gate_one(s :: State, a :: action.Action) -> gate.Verdict {
-  match a {
-    action.SendA2a({ peer: _, topic, payload_json: _ }) =>
-      if topic == "GrantSession" {
-        if specs.depot_grid_budget(
-             { current_kw: s.current_kw, budget_kw: s.budget_kw,
-               pv_kw: s.pv_kw },
-             { power_kw: s.requested_kw }) {
-          gate.allow()
-        } else {
-          gate.deny("depot_grid_budget",
-                    "current_kw + power_kw > budget_kw + pv_kw")
+fn make_tools(charge_url :: Str) -> List[t.Tool] {
+  [
+    t.define(
+      "get_available_chargers",
+      "List chargers at this depot that are currently free.",
+      { title: "GetAvailableChargers", description: "No parameters.", fields: [] },
+      fn (_args :: jv.Json) -> [net, io, proc, sql, fs_read, fs_write, time, crypto, random, concurrent] Result[jv.Json, Errors] {
+        Ok(http_get_json(str.concat(charge_url, "/api/v1/chargers?status=available")))
+      }
+    ),
+    t.define(
+      "reserve_charger",
+      "Reserve a charger for an incoming truck. Returns session_id or error.",
+      { title: "ReserveCharger", description: "Reservation parameters.", fields: [
+        { name: "vin",              type: "string",  required: true,  description: "Truck VIN.",               constraints: [] },
+        { name: "charger_id",       type: "string",  required: true,  description: "Charger to reserve.",      constraints: [] },
+        { name: "target_soc_pct",   type: "number",  required: true,  description: "Target SoC percent.",      constraints: [] },
+        { name: "available_minutes", type: "number", required: true,  description: "Max session duration.",    constraints: [] },
+      ] },
+      fn (args :: jv.Json) -> [net, io, proc, sql, fs_read, fs_write, time, crypto, random, concurrent] Result[jv.Json, Errors] {
+        let body := jv.stringify(args)
+        match http.post(str.concat(charge_url, "/api/v1/charge-schedule"), bytes.from_str(body), "application/json") {
+          Err(_) => Ok(JObj([("error", JStr("unreachable"))])),
+          Ok(resp) => match bytes.to_str(resp.body) {
+            Err(_) => Ok(JObj([("error", JStr("decode error"))])),
+            Ok(b)  => match jv.parse(b) { Err(_) => Ok(JStr(b)), Ok(j) => Ok(j) },
+          },
         }
-      } else {
-        gate.allow()
-      },
-    action.NoOp => gate.allow(),
+      }
+    ),
+    t.define(
+      "get_grid_load",
+      "Get the current power draw (kW) and budget cap for this depot.",
+      { title: "GetGridLoad", description: "No parameters.", fields: [] },
+      fn (_args :: jv.Json) -> [net, io, proc, sql, fs_read, fs_write, time, crypto, random, concurrent] Result[jv.Json, Errors] {
+        Ok(http_get_json(str.concat(charge_url, "/api/v1/grid-status")))
+      }
+    ),
+  ]
+}
+
+fn system_prompt(depot_id :: Str) -> Str {
+  str.concat(
+    "You are an autonomous charging depot agent with ID ",
+    str.concat(depot_id,
+    ". You manage a set of EV chargers and respond to charging requests from trucks. \
+When you receive a charging_request message, check get_available_chargers and get_grid_load \
+before deciding. If capacity allows, call reserve_charger and reply with topic='charging_grant' \
+including the session_id. If capacity is insufficient, reply with topic='charging_deny' and a reason. \
+Track active sessions in your state. Prioritise contracted trucks over freelance ones. \
+Never accept more sessions than you have chargers.")
+  )
+}
+
+fn make_def(depot_id :: Str, charge_url :: Str, provider :: providers.Provider, model_name :: Str) -> runner.AgentDef {
+  {
+    id:            depot_id,
+    kind:          "depot",
+    system_prompt: system_prompt(depot_id),
+    model_name:    model_name,
+    provider:      provider,
+    tools:         make_tools(charge_url),
   }
-}
-
-fn dispatch_and_gate(state_json :: Str, m :: message.Message) -> runner.DispatchOutput {
-  let s := decode(state_json)
-  let r := route(s, m)
-  let gated := list.map(r.actions, fn (a :: action.Action) -> runner.GatedAction {
-    { action: a, verdict: gate_one(r.state, a) }
-  })
-  { new_state_json: encode(r.state), gated: gated }
-}
-
-# -- codec helpers (duplicated from vehicle.lex for now — slated for
-# extraction into lex-soft once we have a `lex.kv` stdlib slice) ---
-
-fn kv_float(s :: Str, key :: Str, default :: Float) -> Float {
-  match kv_get(s, key) {
-    None    => default,
-    Some(v) => match float.from_str(v) { Some(f) => f, None => default },
-  }
-}
-
-fn kv_get(s :: Str, key :: Str) -> Option[Str] {
-  let parts := str.split(s, ";")
-  list.fold(parts, None, fn (acc :: Option[Str], p :: Str) -> Option[Str] {
-    match acc {
-      Some(_) => acc,
-      None    => {
-        let kv := str.split(p, "=")
-        if list.length(kv) == 2 && list.at(kv, 0) == Some(key) {
-          list.at(kv, 1)
-        } else { None }
-      },
-    }
-  })
 }
