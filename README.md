@@ -139,3 +139,7 @@ trace table; once `lex-store` has a pure-lex implementation, swap
 ## License
 
 EUPL-1.2 (matches the rest of the lex ecosystem).
+
+---
+
+Built under the principles of [Trust Without Comprehension](https://alpibru.com/manifesto).

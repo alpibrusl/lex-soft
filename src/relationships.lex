@@ -12,70 +12,75 @@
 # The `contract_json` field is free-form metadata (rates, schedule windows, etc.)
 
 import "std.sql" as sql
+
 import "std.str" as str
+
 import "std.time" as time
+
 import "std.list" as list
+
 import "std.crypto" as crypto
+
 import "./registry" as reg
 
-type Relationship = {
-  id            :: Str,
-  from_agent    :: Str,
-  to_agent      :: Str,
-  role          :: Str,
-  contract_json :: Str,
+type Relationship = { id :: Str, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str }
+
+type RelRow = { id :: Str, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str, active :: Int }
+
+fn parse_rel_row(r :: RelRow) -> Relationship {
+  { id: r.id, from_agent: r.from_agent, to_agent: r.to_agent, role: r.role, contract_json: r.contract_json }
 }
 
-fn row_to_rel(row :: List[sql.SqlValue]) -> Option[Relationship] {
-  match row {
-    [SqlText(id), SqlText(from_a), SqlText(to_a), SqlText(role), SqlText(contract), _, _] =>
-      Some({ id: id, from_agent: from_a, to_agent: to_a, role: role, contract_json: contract }),
-    _ => None,
-  }
-}
-
-fn add(db :: sql.Db, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str) -> [sql, fs_write, crypto] Result[Unit, Str] {
-  let id := crypto.uuid()
-  let now := time.now_iso()
-  let q := "INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) \
-            VALUES (?, ?, ?, ?, ?, 1, ?)"
+fn add(db :: Db, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str) -> [sql, fs_write, random, time] Result[Unit, Str] {
+  let id := crypto.random_str_hex(16)
+  let now := time.now_str()
+  let q := "INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
   match sql.exec(db, q, [PStr(id), PStr(from_agent), PStr(to_agent), PStr(role), PStr(contract_json), PStr(now)]) {
     Err(e) => Err(e.message),
-    Ok(_)  => Ok(unit),
+    Ok(_) => Ok(()),
   }
 }
 
-fn remove(db :: sql.Db, from_agent :: Str, to_agent :: Str, role :: Str) -> [sql, fs_write] Result[Unit, Str] {
+fn remove(db :: Db, from_agent :: Str, to_agent :: Str, role :: Str) -> [sql, fs_write] Result[Unit, Str] {
   let q := "UPDATE relationships SET active=0 WHERE from_agent=? AND to_agent=? AND role=?"
   match sql.exec(db, q, [PStr(from_agent), PStr(to_agent), PStr(role)]) {
     Err(e) => Err(e.message),
-    Ok(_)  => Ok(unit),
+    Ok(_) => Ok(()),
   }
 }
 
-fn peers_of(db :: sql.Db, from_agent :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
-  let q := "SELECT id, from_agent, to_agent, role, contract_json, active, created_at \
-            FROM relationships WHERE from_agent=? AND active=1"
-  match sql.query(db, q, [PStr(from_agent)]) {
+fn peers_of(db :: Db, from_agent :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
+  let q := "SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent=? AND active=1"
+  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [PStr(from_agent)])
+  match rows {
     Err(e) => Err(e.message),
-    Ok(rows) => Ok(list.filter_map(rows, fn (r :: List[sql.SqlValue]) -> Option[Relationship] { row_to_rel(r) })),
+    Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
+      parse_rel_row(r)
+    })),
   }
 }
 
-fn peers_by_role(db :: sql.Db, from_agent :: Str, role :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
-  let q := "SELECT id, from_agent, to_agent, role, contract_json, active, created_at \
-            FROM relationships WHERE from_agent=? AND role=? AND active=1"
-  match sql.query(db, q, [PStr(from_agent), PStr(role)]) {
+fn peers_by_role(db :: Db, from_agent :: Str, role :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
+  let q := "SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent=? AND role=? AND active=1"
+  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [PStr(from_agent), PStr(role)])
+  match rows {
     Err(e) => Err(e.message),
-    Ok(rows) => Ok(list.filter_map(rows, fn (r :: List[sql.SqlValue]) -> Option[Relationship] { row_to_rel(r) })),
+    Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
+      parse_rel_row(r)
+    })),
   }
 }
 
-fn resolve_refs(db :: sql.Db, rels :: List[Relationship]) -> [sql, fs_read] List[reg.AgentRef] {
-  list.filter_map(rels, fn (rel :: Relationship) -> Option[reg.AgentRef] {
-    match reg.find_by_id(db, rel.to_agent) {
-      Ok(Some(ref)) => if str.eq(ref.status, "active") { Some(ref) } else { None },
-      _ => None,
+fn resolve_refs(db :: Db, rels :: List[Relationship]) -> [sql, fs_read] List[reg.AgentRef] {
+  list.fold(rels, [], fn (acc :: List[reg.AgentRef], r :: Relationship) -> [sql, fs_read] List[reg.AgentRef] {
+    match reg.find_by_id(db, r.to_agent) {
+      Ok(Some(ref)) => if ref.status == "active" {
+        list.concat(acc, [ref])
+      } else {
+        acc
+      },
+      _ => acc,
     }
   })
 }
+

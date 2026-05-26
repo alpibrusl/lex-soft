@@ -9,3 +9,4 @@ lex-schema = { path = "../lex-schema" }
 lex-web    = { path = "../lex-web" }
 lex-llm    = { path = "../lex-llm" }
 lex-agent  = { path = "../lex-agent" }
+lex-log    = { path = "../lex-log" }
