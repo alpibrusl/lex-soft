@@ -1,46 +1,35 @@
-# state_store.lex — per-agent state persistence.
+# state_store.lex — per-agent JSON state persistence.
 #
-# State is stored as a JSON string keyed by agent name. The runner
-# treats it opaquely — encode/decode is the agent module's job.
+# Each agent has exactly one state row. The runner loads it before
+# calling the LLM and saves it afterwards. The state blob is opaque
+# to the platform — agents own their own schema.
 
-import "std.sql"      as sql
-import "std.list"     as list
-import "std.datetime" as datetime
+import "std.sql" as sql
 
-fn load_or_init(
-  db :: sql.Db,
-  agent :: Str,
-  initial_json :: Str,
-) -> [sql, fs_write, time] Result[Str, Str] {
-  match sql.query(db, "SELECT state_json FROM agent_state WHERE agent = ?", [agent]) {
-    Err(e) => Err(sql.error_msg(e)),
-    Ok(rows) =>
-      if list.is_empty(rows) {
-        match save(db, agent, initial_json) {
-          Err(e) => Err(e),
-          Ok(_)  => Ok(initial_json),
-        }
-      } else {
-        match list.first(rows) {
-          None      => Err("unreachable: rows non-empty"),
-          Some(row) => Ok(row.state_json),
-        }
-      },
+import "std.time" as time
+
+import "std.list" as list
+
+type StateRow = { state_json :: Str }
+
+fn load(db :: Db, agent_id :: Str) -> [sql, fs_read] Str {
+  let q := "SELECT state_json FROM agent_state WHERE agent_id=?"
+  let rows :: Result[List[StateRow], SqlError] := sql.query(db, q, [PStr(agent_id)])
+  match rows {
+    Err(_) => "{}",
+    Ok(rs) => match list.head(rs) {
+      None => "{}",
+      Some(r) => r.state_json,
+    },
   }
 }
 
-fn save(
-  db :: sql.Db,
-  agent :: Str,
-  state_json :: Str,
-) -> [sql, fs_write, time] Result[Unit, Str] {
-  let now_ms := datetime.now_ms()
-  match sql.exec(db,
-    "INSERT INTO agent_state(agent, state_json, updated_ts_ms) \
-     VALUES (?, ?, ?) \
-     ON CONFLICT(agent) DO UPDATE SET state_json = excluded.state_json, updated_ts_ms = excluded.updated_ts_ms",
-    [agent, state_json, now_ms]) {
-    Err(e) => Err(sql.error_msg(e)),
-    Ok(_)  => Ok(unit),
+fn save(db :: Db, agent_id :: Str, state_json :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
+  let now := time.now_str()
+  let q := "INSERT INTO agent_state (agent_id, state_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at"
+  match sql.exec(db, q, [PStr(agent_id), PStr(state_json), PStr(now)]) {
+    Err(e) => Err(e.message),
+    Ok(_) => Ok(()),
   }
 }
+

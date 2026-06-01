@@ -1,8 +1,11 @@
 [package]
-name    = "ev_fleet"
-version = "0.1.0"
+name        = "ev-fleet"
+version     = "0.1.0"
+description = "EV fleet demo — 20 trucks, 4 depots, 2 TMS, dynamic relationships."
 
 [dependencies]
 lex-soft   = { path = "../.." }
-lex-web    = { path = "../../../lex-web" }
 lex-schema = { path = "../../../lex-schema" }
+lex-web    = { path = "../../../lex-web" }
+lex-llm    = { path = "../../../lex-llm" }
+lex-agent  = { path = "../../../lex-agent" }

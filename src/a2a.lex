@@ -1,64 +1,39 @@
-# a2a.lex — outgoing HTTP A2A sender.
+# a2a.lex — outgoing agent-to-agent messages via A2A tasks/send.
 #
-# Resolves a peer name to a URL via the static peer map, then POSTs the
-# message envelope. v1 ignores response bodies (fire-and-forget); the
-# trace records the HTTP status.
+# send() resolves the target's inbox_url from the registry and calls
+# lex-agent/client.send_task with a proper JSON-RPC envelope.
+# The topic becomes the `skill` field in SendOpts so the receiving
+# agent's skill router dispatches to the right handler.
 
-import "std.http" as http
-import "std.str"  as str
+import "std.str" as str
+
 import "std.list" as list
-import "std.int"  as int
 
-import "./action" as action
+import "lex-schema/json_value" as jv
 
-type Peer = { name :: Str, url :: Str }
+import "lex-agent/src/message" as msg
 
-type SendOutcome = {
-  ok :: Bool,
-  status :: Int,
-  detail :: Str,
-}
+import "lex-agent/src/client" as client
 
-fn resolve(peers :: List[Peer], name :: Str) -> Option[Str] {
-  match list.find(peers, fn (p :: Peer) -> Bool { p.name == name }) {
-    None    => None,
-    Some(p) => Some(p.url),
+import "./registry" as reg
+
+fn send(db :: Db, from_id :: Str, to_id :: Str, topic :: Str, payload_json :: Str) -> [sql, fs_read, net, crypto, random] Result[Unit, Str] {
+  match reg.find_by_id(db, to_id) {
+    Err(e) => Err(e),
+    Ok(None) => Err(str.concat("agent not found: ", to_id)),
+    Ok(Some(peer)) => {
+      let m    := msg.user_text(payload_json)
+      let opts := { task_id: str.concat("a2a-", to_id), context_id: from_id, skill: topic }
+      match client.send_task(peer.inbox_url, m, opts) {
+        Err(_) => Err("a2a send failed"),
+        Ok(_)  => Ok(()),
+      }
+    },
   }
 }
 
-fn send(
-  peers :: List[Peer],
-  from :: Str,
-  a :: action.Action,
-) -> [net, time] SendOutcome {
-  match a {
-    action.NoOp => { ok: true, status: 0, detail: "noop" },
-    action.SendA2a({ peer, topic, payload_json }) =>
-      match resolve(peers, peer) {
-        None => { ok: false, status: 0,
-                  detail: str.concat("unknown peer: ", peer) },
-        Some(base_url) => {
-          let url := str.concat(base_url, "/agents/")
-                       |> fn (u :: Str) -> Str { str.concat(u, peer) }
-                       |> fn (u :: Str) -> Str { str.concat(u, "/inbox") }
-          let body := str.concat("{\"from\":\"", from)
-                       |> fn (s :: Str) -> Str { str.concat(s, "\",\"topic\":\"") }
-                       |> fn (s :: Str) -> Str { str.concat(s, topic) }
-                       |> fn (s :: Str) -> Str { str.concat(s, "\",\"payload_json\":") }
-                       |> fn (s :: Str) -> Str { str.concat(s, json_escape(payload_json)) }
-                       |> fn (s :: Str) -> Str { str.concat(s, "}") }
-          match http.post(url, body, "application/json") {
-            Err(e) => { ok: false, status: 0, detail: http.error_msg(e) },
-            Ok(r)  => { ok: http.status(r) < 400, status: http.status(r), detail: "" },
-          }
-        },
-      },
-  }
-}
-
-# Quote a raw JSON value to embed in another JSON object. If it parses
-# as JSON, leave as-is; otherwise wrap as a string. v1 keeps this naive
-# — payloads in the EV fleet are already valid JSON literals.
-fn json_escape(s :: Str) -> Str {
-  if str.is_empty(s) { "\"\"" } else { s }
+fn broadcast(db :: Db, from_id :: Str, to_ids :: List[Str], topic :: Str, payload_json :: Str) -> [sql, fs_read, net, crypto, random] List[Result[Unit, Str]] {
+  list.map(to_ids, fn (to_id :: Str) -> [sql, fs_read, net, crypto, random] Result[Unit, Str] {
+    send(db, from_id, to_id, topic, payload_json)
+  })
 }
