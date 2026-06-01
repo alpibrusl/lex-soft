@@ -6,6 +6,7 @@ license     = "EUPL-1.2"
 
 [dependencies]
 lex-schema = { path = "../lex-schema" }
+lex-spec   = { path = "../lex-spec" }
 lex-web    = { path = "../lex-web" }
 lex-llm    = { path = "../lex-llm" }
 lex-agent  = { path = "../lex-agent" }

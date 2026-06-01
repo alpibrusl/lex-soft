@@ -24,5 +24,5 @@ type AgentRef = registry.AgentRef
 
 type Relationship = relationships.Relationship
 
-type AgentDef = runner.AgentDef
+type AgentConfig = runner.AgentConfig
 
