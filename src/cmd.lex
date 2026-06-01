@@ -20,13 +20,13 @@
 #   OLLAMA_URL     Ollama base URL         (default: http://localhost:11434)
 #   OLLAMA_MODEL   LLM model name          (default: gemma4:latest)
 
-import "lex-cli/src/cli" as cli
+import "lex-cli/src/arg" as arg
 
 import "lex-cli/src/acli" as acli
 
 import "lex-cli/src/help" as help
 
-import "lex-mcp/src/mcp" as mcp
+import "lex-mcp/src/server" as mcp_server
 
 import "lex-agent/src/server" as srv
 
@@ -35,26 +35,8 @@ import "lex-schema/json_value" as jv
 # Returns the canonical CliDef for a lex-soft platform binary.
 # Callers use this for --help rendering and ACLI introspection;
 # actual config is read from env vars inside each entry point.
-fn platform_cli(name :: Str, version :: Str, description :: Str) -> cli.CliDef {
-  {
-    name: name,
-    version: version,
-    description: description,
-    flags: [
-      cli.flag_str("db",          "d", "SQLite database file path",              "platform.db"),
-      cli.flag_str("port",        "p", "HTTP listen port (serve mode)",          "8100"),
-      cli.flag_str("model",       "m", "LLM model name",                         "gemma4:latest"),
-      cli.flag_str("ollama-url",  "",  "Ollama base URL",                        "http://localhost:11434"),
-      cli.flag_str("agent",       "a", "Agent ID to expose (mcp subcommand)",    ""),
-      cli.flag_str("output",      "o", "Output format: text | json",             "text"),
-    ],
-    positionals: [],
-    subcommands: [
-      cli.subcommand("serve",      "Start HTTP A2A server with all agents mounted",     [], []),
-      cli.subcommand("mcp",        "Run a single agent as MCP stdio server",            [], []),
-      cli.subcommand("introspect", "Print the CLI command tree as ACLI JSON",           [], []),
-    ],
-  }
+fn platform_cli(name :: Str, version :: Str, description :: Str) -> arg.CliDef {
+  { name: name, version: version, description: description, flags: [arg.flag_str("db", "d", "SQLite database file path", "platform.db"), arg.flag_str("port", "p", "HTTP listen port (serve mode)", "8100"), arg.flag_str("model", "m", "LLM model name", "gemma4:latest"), arg.flag_str("ollama-url", "", "Ollama base URL", "http://localhost:11434"), arg.flag_str("agent", "a", "Agent ID to expose (mcp subcommand)", ""), arg.flag_str("output", "o", "Output format: text | json", "text")], positionals: [], subcommands: [arg.subcommand("serve", "Start HTTP A2A server with all agents mounted", [], []), arg.subcommand("mcp", "Run a single agent as MCP stdio server", [], []), arg.subcommand("introspect", "Print the CLI command tree as ACLI JSON", [], [])] }
 }
 
 # Render --help text for the platform CLI.
@@ -70,5 +52,6 @@ fn platform_introspect(name :: Str, version :: Str, description :: Str) -> jv.Js
 # Run `agent_def` as an MCP stdio server. Blocks until stdin closes.
 # Call this from a dedicated mcp_main.lex; do not mix with net.serve_fn.
 fn run_mcp(agent_def :: srv.AgentDef) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
-  mcp.server.run(agent_def)
+  mcp_server.run(agent_def)
 }
+

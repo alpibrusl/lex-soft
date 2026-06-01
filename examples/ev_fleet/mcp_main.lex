@@ -47,7 +47,11 @@ import "./agents/tms" as tms_agent
 
 fn get_env(key :: Str, default :: Str) -> [env] Str {
   match env.get(key) {
-    Some(v) => if str.is_empty(str.trim(v)) { default } else { v },
+    Some(v) => if str.is_empty(str.trim(v)) {
+      default
+    } else {
+      v
+    },
     None => default,
   }
 }
@@ -98,21 +102,24 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
     let __q := io.print(cmd.platform_help("ev-fleet", "0.3.0", "EV fleet agent platform"))
     ()
   } else {
-    let port    := match str.to_int(get_env("PORT", "8100")) { Some(n) => n, None => 8100 }
-    let db      := sql.open(get_env("DB_PATH", "ev_fleet.db"))
-    let model   := get_env("OLLAMA_MODEL", "gemma4:latest")
-    let o_url   := get_env("OLLAMA_URL",   "http://localhost:11434")
-    let t_url   := get_env("TMS_URL",      "http://localhost:8200")
-    let c_url   := get_env("CHARGE_URL",   "http://localhost:8000")
-    let tel_url := get_env("TELEMETRY_URL","http://localhost:8300")
-    let log_url := get_env("LOGISTICS_URL","http://localhost:8400")
+    let port := match str.to_int(get_env("PORT", "8100")) {
+      Some(n) => n,
+      None => 8100,
+    }
+    let db := sql.open(get_env("DB_PATH", "ev_fleet.db"))
+    let model := get_env("OLLAMA_MODEL", "gemma4:latest")
+    let o_url := get_env("OLLAMA_URL", "http://localhost:11434")
+    let t_url := get_env("TMS_URL", "http://localhost:8200")
+    let c_url := get_env("CHARGE_URL", "http://localhost:8000")
+    let tel_url := get_env("TELEMETRY_URL", "http://localhost:8300")
+    let log_url := get_env("LOGISTICS_URL", "http://localhost:8400")
     let __p1 := io.print(str.concat("=== EV Fleet MCP server — agent: ", agent_id))
     match migrate.run(db) {
       Err(e) => io.print(str.concat("FATAL migrate: ", e)),
       Ok(_) => {
         let __seed := match seed.run(db) {
           Err(e) => io.print(str.concat("WARN seed: ", e)),
-          Ok(_)  => (),
+          Ok(_) => (),
         }
         let provider := providers.ollama_at(o_url)
         match build_agent(db, agent_id, port, t_url, c_url, tel_url, log_url, provider, model) {
@@ -126,3 +133,4 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
     }
   }
 }
+

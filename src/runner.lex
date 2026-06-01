@@ -18,6 +18,10 @@ import "std.list" as list
 
 import "std.iter" as iter
 
+import "std.http" as http
+
+import "std.bytes" as bytes
+
 import "lex-schema/json_value" as jv
 
 import "lex-schema/schema" as s
@@ -37,8 +41,6 @@ import "lex-llm/src/provider" as prov
 import "lex-agent/src/server" as srv
 
 import "lex-agent/src/message" as msg
-
-import "lex-agent/src/client" as a2a_client
 
 import "./state_store" as state_store
 
@@ -132,61 +134,52 @@ fn find_peer_url(peers :: List[PeerInfo], to_id :: Str) -> Option[Str] {
 }
 
 fn make_platform_tools(peers :: List[PeerInfo], agent_id :: Str) -> List[t.Tool] {
-  [
-    t.define(
-      "find_peers",
-      "Find active peers you are authorised to contact for a given intent. Intents: charging, dispatch, reporting, coordination.",
-      { title: "FindPeers", description: "Peer resolution by intent.", fields: [s.required_str("intent", [])] },
-      fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, e.Errors] {
-        let intent := match jv.get_field(args, "intent") {
-          Some(JStr(sv)) => sv,
-          _ => "coordination",
-        }
-        let roles := intent_roles(intent)
-        let filtered := if list.len(roles) == 0 {
-          peers
-        } else {
-          list.filter(peers, fn (p :: PeerInfo) -> Bool {
-            list.fold(roles, false, fn (acc :: Bool, role :: Str) -> Bool {
-              acc or p.role == role
-            })
-          })
-        }
-        Ok(JList(list.map(filtered, fn (p :: PeerInfo) -> jv.Json {
-          JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name))])
-        })))
-      }
-    ),
-    t.define(
-      "send_message",
-      "Send an A2A message to a peer agent via tasks/send. Use find_peers first to get valid peer IDs.",
-      {
-        title: "SendMessage",
-        description: "Send a message to another agent.",
-        fields: [s.required_str("to_id", []), s.required_str("topic", []), s.required_str("payload_json", [])],
-      },
-      fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, e.Errors] {
-        let to_id   := match jv.get_field(args, "to_id")        { Some(JStr(sv)) => sv, _ => "" }
-        let topic   := match jv.get_field(args, "topic")        { Some(JStr(sv)) => sv, _ => "" }
-        let payload := match jv.get_field(args, "payload_json") { Some(JStr(sv)) => sv, _ => "{}" }
-        if str.is_empty(to_id) {
-          Ok(JObj([("error", JStr("to_id is required"))]))
-        } else {
-          match find_peer_url(peers, to_id) {
-            None => Ok(JObj([("error", JStr(str.concat("agent not found: ", to_id)))])),
-            Some(peer_url) => {
-              let m    := msg.user_text(payload)
-              let opts := { task_id: str.concat("msg-", to_id), context_id: agent_id, skill: topic }
-              match a2a_client.send_task(peer_url, m, opts) {
-                Err(_) => Ok(JObj([("sent", JBool(false))])),
-                Ok(_)  => Ok(JObj([("sent", JBool(true))])),
-              }
-            },
+  [t.define("find_peers", "Find active peers you are authorised to contact for a given intent. Intents: charging, dispatch, reporting, coordination.", { title: "FindPeers", description: "Peer resolution by intent.", fields: [s.required_str("intent", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
+    let intent := match jv.get_field(args, "intent") {
+      Some(JStr(sv)) => sv,
+      _ => "coordination",
+    }
+    let roles := intent_roles(intent)
+    let filtered := if list.len(roles) == 0 {
+      peers
+    } else {
+      list.filter(peers, fn (p :: PeerInfo) -> Bool {
+        list.fold(roles, false, fn (acc :: Bool, role :: Str) -> Bool {
+          acc or p.role == role
+        })
+      })
+    }
+    Ok(JList(list.map(filtered, fn (p :: PeerInfo) -> jv.Json {
+      JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name))])
+    })))
+  }), t.define("send_message", "Send an A2A message to a peer agent via tasks/send. Use find_peers first to get valid peer IDs.", { title: "SendMessage", description: "Send a message to another agent.", fields: [s.required_str("to_id", []), s.required_str("topic", []), s.required_str("payload_json", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
+    let to_id := match jv.get_field(args, "to_id") {
+      Some(JStr(sv)) => sv,
+      _ => "",
+    }
+    let topic := match jv.get_field(args, "topic") {
+      Some(JStr(sv)) => sv,
+      _ => "",
+    }
+    let payload := match jv.get_field(args, "payload_json") {
+      Some(JStr(sv)) => sv,
+      _ => "{}",
+    }
+    if str.is_empty(to_id) {
+      Ok(JObj([("error", JStr("to_id is required"))]))
+    } else {
+      match find_peer_url(peers, to_id) {
+        None => Ok(JObj([("error", JStr(str.concat("agent not found: ", to_id)))])),
+        Some(peer_url) => {
+          let body_json := JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("skill", JStr(topic)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("kind", JStr("text")), ("text", JStr(payload))])]))]))]))])
+          match http.post(peer_url, bytes.from_str(jv.stringify(body_json)), "application/json") {
+            Err(_) => Ok(JObj([("sent", JBool(false))])),
+            Ok(_) => Ok(JObj([("sent", JBool(true))])),
           }
-        }
+        },
       }
-    ),
-  ]
+    }
+  })]
 }
 
 # Returns a lex-agent Skill handler closure backed by lex-llm.
@@ -194,21 +187,22 @@ fn make_platform_tools(peers :: List[PeerInfo], agent_id :: Str) -> List[t.Tool]
 # relationship graph stays live.
 fn make_handler(db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
   fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-    let run_id    := trace.new_run_id()
-    let state     := state_store.load(db, cfg.id)
-    let text_in   := first_text(m)
-    let __t1      := trace.record(db, run_id, cfg.id, "received", text_in)
-    let peers     := load_peers(db, cfg.id)
-    let platform  := make_platform_tools(peers, cfg.id)
+    let run_id := trace.new_run_id()
+    let state := state_store.load(db, cfg.id)
+    let text_in := first_text(m)
+    let __t1 := trace.record(db, run_id, cfg.id, "received", text_in)
+    let peers := load_peers(db, cfg.id)
+    let platform := make_platform_tools(peers, cfg.id)
     let all_tools := list.concat(platform, cfg.tools)
-    let sys       := build_system_prompt(cfg, state)
-    let the_model := { provider: cfg.provider.name, model: cfg.model_name }
-    let llm_def   := { name: cfg.id, goal: sys, model: the_model, provider: cfg.provider, tools: all_tools, options: llm_agent.default_options() }
-    let conv      := [llm_msg.UserMsg(text_in)]
-    let __t2      := trace.record(db, run_id, cfg.id, "llm_start", "{}")
-    let steps     := iter.to_list(llm_agent.run_loop(llm_def, conv))
-    let answer    := extract_answer(steps)
-    let __t3      := trace.record(db, run_id, cfg.id, "llm_done", answer)
+    let sys := build_system_prompt(cfg, state)
+    let the_model := prov.make_model_ref(cfg.provider.name, cfg.model_name)
+    let llm_def := llm_agent.make_agent(cfg.id, sys, the_model, cfg.provider, all_tools, llm_agent.default_options())
+    let conv := [llm_msg.UserMsg(text_in)]
+    let __t2 := trace.record(db, run_id, cfg.id, "llm_start", "{}")
+    let steps := iter.to_list(llm_agent.run_loop(llm_def, conv))
+    let answer := extract_answer(steps)
+    let __t3 := trace.record(db, run_id, cfg.id, "llm_done", answer)
     { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [] }
   }
 }
+

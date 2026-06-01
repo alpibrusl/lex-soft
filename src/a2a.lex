@@ -22,11 +22,11 @@ fn send(db :: Db, from_id :: Str, to_id :: Str, topic :: Str, payload_json :: St
     Err(e) => Err(e),
     Ok(None) => Err(str.concat("agent not found: ", to_id)),
     Ok(Some(peer)) => {
-      let m    := msg.user_text(payload_json)
+      let m := msg.user_text(payload_json)
       let opts := { task_id: str.concat("a2a-", to_id), context_id: from_id, skill: topic }
       match client.send_task(peer.inbox_url, m, opts) {
         Err(_) => Err("a2a send failed"),
-        Ok(_)  => Ok(()),
+        Ok(_) => Ok(()),
       }
     },
   }
@@ -37,3 +37,4 @@ fn broadcast(db :: Db, from_id :: Str, to_ids :: List[Str], topic :: Str, payloa
     send(db, from_id, to_id, topic, payload_json)
   })
 }
+
