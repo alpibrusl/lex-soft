@@ -19,6 +19,8 @@ import "./trace" as trace
 
 import "./runner" as runner
 
+import "./cmd" as cmd
+
 # Re-export key types for convenience.
 type AgentRef = registry.AgentRef
 

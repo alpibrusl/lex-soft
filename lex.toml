@@ -11,3 +11,5 @@ lex-web    = { path = "../lex-web" }
 lex-llm    = { path = "../lex-llm" }
 lex-agent  = { path = "../lex-agent" }
 lex-log    = { path = "../lex-log" }
+lex-mcp    = { path = "../lex-mcp" }
+lex-cli    = { path = "../lex-cli" }
