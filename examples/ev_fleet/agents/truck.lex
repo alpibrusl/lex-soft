@@ -31,6 +31,8 @@ import "lex-agent/src/agent_card" as card
 
 import "lex-soft/src/runner" as runner
 
+import "lex-soft/src/platform/client" as pclient
+
 fn http_get_json(url :: Str) -> [net] jv.Json {
   match http.get(url) {
     Err(_) => JObj([("error", JStr("unreachable"))]),
@@ -98,6 +100,21 @@ fn make_agent_def(db :: Db, truck_id :: Str, base_url :: Str, tms_url :: Str, te
   let capability := truck_capability()
   let cfg := { id: truck_id, kind: "truck", system_prompt: system_prompt(truck_id), model_name: model_name, provider: provider, tools: make_tools(truck_id, tms_url, telemetry_url, logistics_url) }
   let handler := runner.make_handler(db, cfg)
+  let c := card.make(truck_id, str.concat("Autonomous truck agent ", truck_id), "0.3.0", base_url, [capability])
+  srv.make_agent_def(c, [{ capability: capability, handle: handler }])
+}
+
+# Distributed variant — state and peers come from the platform API;
+# outbound messages are routed through the platform's /v1/messages.
+#
+# Caller boot sequence (before serving requests):
+#   1. outbox.init(local_db)
+#   2. pclient.register(client, truck_id, "truck", name, "", capabilities)
+#   3. conc.spawn(fn () -> ... { outbox.flush_loop(local_db, client.url, 500) })
+fn make_agent_def_remote(client :: pclient.PlatformClient, local_db :: Db, truck_id :: Str, base_url :: Str, tms_url :: Str, telemetry_url :: Str, logistics_url :: Str, provider :: prov.Provider, model_name :: Str) -> srv.AgentDef {
+  let capability := truck_capability()
+  let cfg := { id: truck_id, kind: "truck", system_prompt: system_prompt(truck_id), model_name: model_name, provider: provider, tools: make_tools(truck_id, tms_url, telemetry_url, logistics_url) }
+  let handler := runner.make_handler_remote(client, local_db, cfg)
   let c := card.make(truck_id, str.concat("Autonomous truck agent ", truck_id), "0.3.0", base_url, [capability])
   srv.make_agent_def(c, [{ capability: capability, handle: handler }])
 }
