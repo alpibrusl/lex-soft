@@ -13,13 +13,15 @@
 #   POST   /v1/state/:id                save agent state blob
 #   POST   /v1/messages                 deliver a message → routes to inbox
 #   GET    /v1/messages/:id/pull        edge agent polls its inbox
+#   GET    /v1/audit                    query traces (agent_id, event_kind, since, limit)
+#   GET    /v1/health                   active agents + queue depths
 #
 # Background workers (started via conc.spawn in main):
 #   push_worker  — drains the "push" queue, delivers to cloud agents
 #
 # Environment variables:
-#   DB_URL         Postgres DSN          (default: platform.db / SQLite dev)
-#   PORT           HTTP listen port      (default: 9000)
+#   DB_URL         Postgres DSN or SQLite path  (default: platform.db)
+#   PORT           HTTP listen port             (default: 9000)
 
 import "std.net" as net
 
@@ -29,15 +31,15 @@ import "std.str" as str
 
 import "std.int" as int
 
+import "std.list" as list
+
 import "std.env" as env
 
 import "std.io" as io
 
-import "std.map" as map
-
-import "std.list" as list
-
 import "lex-schema/json_value" as jv
+
+import "lex-jobs/src/jobs" as jobs
 
 import "lex-web/router" as router
 
@@ -53,9 +55,11 @@ import "../state_store" as state
 
 import "../migrate" as migrate
 
+import "../trace" as trace
+
 import "./inbox" as inbox
 
-# ---- Route handlers (pure — no effects) -------------------------
+# ---- Route handlers -----------------------------------------------
 fn handle_lookup(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   match ctx.path_param(c, "id") {
     None => resp.bad_request("{\"error\":\"missing id\"}"),
@@ -77,8 +81,7 @@ fn handle_state_load(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   }
 }
 
-# ---- Route handlers (effectful) ---------------------------------
-fn handle_register(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time] resp.Response {
+fn handle_register(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time, random, crypto] resp.Response {
   match jv.parse(c.body) {
     Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
     Ok(j) => {
@@ -92,7 +95,10 @@ fn handle_register(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time] resp.Respons
       } else {
         match reg.register(db, id, kind, name, inbox_url, caps) {
           Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
-          Ok(_) => resp.json("{\"ok\":true}"),
+          Ok(_) => {
+            let __audit := trace.record_platform(db, id, "agent_registered", jv.stringify(JObj([("kind", JStr(kind)), ("inbox_url", JStr(inbox_url))])))
+            resp.json("{\"ok\":true}")
+          },
         }
       }
     },
@@ -121,17 +127,20 @@ fn handle_peers(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   }
 }
 
-fn handle_heartbeat(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time] resp.Response {
+fn handle_heartbeat(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time, random, crypto] resp.Response {
   match ctx.path_param(c, "id") {
     None => resp.bad_request("{\"error\":\"missing id\"}"),
     Some(id) => match reg.heartbeat(db, id) {
       Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
-      Ok(_) => resp.json("{\"ok\":true}"),
+      Ok(_) => {
+        let __audit := trace.record_platform(db, id, "heartbeat", "{}")
+        resp.json("{\"ok\":true}")
+      },
     },
   }
 }
 
-fn handle_state_save(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time] resp.Response {
+fn handle_state_save(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time, random, crypto] resp.Response {
   match ctx.path_param(c, "id") {
     None => resp.bad_request("{\"error\":\"missing id\"}"),
     Some(id) => match jv.parse(c.body) {
@@ -140,14 +149,17 @@ fn handle_state_save(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time] resp.Respo
         let state_json := str_field(j, "state")
         match state.save(db, id, state_json) {
           Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
-          Ok(_) => resp.json("{\"ok\":true}"),
+          Ok(_) => {
+            let __audit := trace.record_platform(db, id, "state_saved", "{}")
+            resp.json("{\"ok\":true}")
+          },
         }
       },
     },
   }
 }
 
-fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time] resp.Response {
+fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time, random, crypto] resp.Response {
   match jv.parse(c.body) {
     Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
     Ok(j) => {
@@ -157,7 +169,12 @@ fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time] resp.Re
       } else {
         match inbox.deliver(db, to_id, c.body) {
           Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
-          Ok(_) => resp.json("{\"queued\":true}"),
+          Ok(_) => {
+            let from_id := str_field(j, "from")
+            let topic := str_field(j, "topic")
+            let __audit := trace.record_platform(db, to_id, "msg_delivered", jv.stringify(JObj([("from", JStr(from_id)), ("topic", JStr(topic))])))
+            resp.json("{\"queued\":true}")
+          },
         }
       }
     },
@@ -170,7 +187,73 @@ fn handle_pull(db :: Db, c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_rea
     Some(agent_id) => match inbox.pull_next(db, agent_id) {
       Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
       Ok(None) => resp.json("{\"payload\":null}"),
-      Ok(Some(payload)) => resp.json(jv.stringify(JObj([("payload", JStr(payload))]))),
+      Ok(Some(payload)) => {
+        let __audit := trace.record_platform(db, agent_id, "msg_pulled", "{}")
+        resp.json(jv.stringify(JObj([("payload", JStr(payload))])))
+      },
+    },
+  }
+}
+
+fn handle_audit(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+  let agent_id := ctx.query_param_or(c, "agent_id", "")
+  let event_kind := ctx.query_param_or(c, "event_kind", "")
+  let since := ctx.query_param_or(c, "since", "")
+  let limit_str := ctx.query_param_or(c, "limit", "100")
+  let lim := match str.to_int(limit_str) {
+    Some(n) => n,
+    None => 100,
+  }
+  let q := "SELECT id, run_id, agent_id, event_kind, data_json, ts FROM traces WHERE (? = '' OR agent_id = ?) AND (? = '' OR event_kind = ?) AND (? = '' OR ts >= ?) ORDER BY ts DESC LIMIT ?"
+  let params := [PStr(agent_id), PStr(agent_id), PStr(event_kind), PStr(event_kind), PStr(since), PStr(since), PInt(lim)]
+  let result :: Result[List[{ id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }], SqlError] := sql.query(db, q, params)
+  match result {
+    Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
+    Ok(rows) => {
+      let events := list.map(rows, fn (row :: { id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }) -> jv.Json {
+        JObj([("id", JStr(row.id)), ("run_id", JStr(row.run_id)), ("agent_id", JStr(row.agent_id)), ("event_kind", JStr(row.event_kind)), ("data", JStr(row.data_json)), ("ts", JStr(row.ts))])
+      })
+      resp.json(jv.stringify(JList(events)))
+    },
+  }
+}
+
+fn handle_health(db :: Db, _c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+  let agent_q := "SELECT kind, COUNT(*) as cnt FROM agents WHERE status = 'active' GROUP BY kind"
+  let push_q := "SELECT COUNT(*) as cnt FROM lex_jobs WHERE queue = 'push' AND status = 'pending'"
+  let pull_q := "SELECT COUNT(*) as cnt FROM lex_jobs WHERE queue LIKE 'pull:%' AND status = 'pending'"
+  let agent_result :: Result[List[{ kind :: Str, cnt :: Int }], SqlError] := sql.query(db, agent_q, [])
+  match agent_result {
+    Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
+    Ok(agent_rows) => {
+      let by_kind := list.map(agent_rows, fn (row :: { kind :: Str, cnt :: Int }) -> jv.Json {
+        JObj([("kind", JStr(row.kind)), ("count", JInt(row.cnt))])
+      })
+      let total := list.fold(agent_rows, 0, fn (acc :: Int, row :: { kind :: Str, cnt :: Int }) -> Int {
+        acc + row.cnt
+      })
+      let push_result :: Result[List[{ cnt :: Int }], SqlError] := sql.query(db, push_q, [])
+      match push_result {
+        Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
+        Ok(push_rows) => {
+          let push_pending := match list.head(push_rows) {
+            None => 0,
+            Some(row) => row.cnt,
+          }
+          let pull_result :: Result[List[{ cnt :: Int }], SqlError] := sql.query(db, pull_q, [])
+          match pull_result {
+            Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
+            Ok(pull_rows) => {
+              let pull_pending := match list.head(pull_rows) {
+                None => 0,
+                Some(row) => row.cnt,
+              }
+              let body := JObj([("status", JStr("ok")), ("agents", JObj([("total", JInt(total)), ("by_kind", JList(by_kind))])), ("queues", JObj([("push_pending", JInt(push_pending)), ("pull_pending", JInt(pull_pending))]))])
+              resp.json(jv.stringify(body))
+            },
+          }
+        },
+      }
     },
   }
 }
@@ -199,8 +282,14 @@ fn build_router(db :: Db) -> router.Router {
   let r7 := router.route_effectful(r6, "POST", "/v1/messages", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_send(db, c)
   })
-  router.route_effectful(r7, "GET", "/v1/messages/:id/pull", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r8 := router.route_effectful(r7, "GET", "/v1/messages/:id/pull", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_pull(db, c)
+  })
+  let r9 := router.route_effectful(r8, "GET", "/v1/audit", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    handle_audit(db, c)
+  })
+  router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    handle_health(db, c)
   })
 }
 
@@ -213,14 +302,14 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
     Some(n) => n,
     None => 9000,
   }
-  let db_path := match env.get("DB_PATH") {
-    Some(p) => p,
+  let db_url := match env.get("DB_URL") {
+    Some(u) => u,
     None => "platform.db",
   }
   let __p1 := io.print("=== lex-soft platform server ===")
   let __p2 := io.print(str.concat("  port:    ", int.to_str(port)))
-  let __p3 := io.print(str.concat("  db:      ", db_path))
-  match sql.open(db_path) {
+  let __p3 := io.print(str.concat("  db:      ", db_url))
+  match sql.open(db_url) {
     Err(e) => io.print(str.concat("FATAL: db open: ", e.message)),
     Ok(db) => match migrate.run(db) {
       Err(e) => io.print(str.concat("FATAL: migrate: ", e)),

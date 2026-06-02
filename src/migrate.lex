@@ -27,7 +27,7 @@ fn ddl_agent_state() -> Str {
 }
 
 fn ddl_traces() -> Str {
-  "CREATE TABLE IF NOT EXISTS traces (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, agent_id TEXT NOT NULL, event_kind TEXT NOT NULL, data_json TEXT, ts TEXT NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS traces (id TEXT NOT NULL PRIMARY KEY, run_id TEXT NOT NULL, agent_id TEXT NOT NULL, event_kind TEXT NOT NULL, data_json TEXT, ts TEXT NOT NULL)"
 }
 
 fn ddl_traces_idx() -> Str {
