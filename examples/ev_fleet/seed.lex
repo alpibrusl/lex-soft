@@ -34,7 +34,34 @@ fn base_url(port :: Int) -> Str {
   str.concat("http://localhost:", int.to_str(port))
 }
 
-fn register_agents(db :: sql.Db) -> [sql, fs_write] Result[Unit, Str] {
+fn fold_ok(xs :: List[Int], f :: (Int) -> [sql, fs_write, time] Result[Unit, Str]) -> [sql, fs_write, time] Result[Unit, Str] {
+  list.fold(xs, Ok(()), fn (acc :: Result[Unit, Str], n :: Int) -> [sql, fs_write, time] Result[Unit, Str] {
+    match acc {
+      Err(e) => Err(e),
+      Ok(_) => f(n),
+    }
+  })
+}
+
+fn fold_ok_str(xs :: List[Str], f :: (Str) -> [sql, fs_write, crypto, random, time] Result[Unit, Str]) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+  list.fold(xs, Ok(()), fn (acc :: Result[Unit, Str], s :: Str) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+    match acc {
+      Err(e) => Err(e),
+      Ok(_) => f(s),
+    }
+  })
+}
+
+fn fold_ok_n_crypto(xs :: List[Int], f :: (Int) -> [sql, fs_write, crypto, random, time] Result[Unit, Str]) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+  list.fold(xs, Ok(()), fn (acc :: Result[Unit, Str], n :: Int) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+    match acc {
+      Err(e) => Err(e),
+      Ok(_) => f(n),
+    }
+  })
+}
+
+fn register_agents(db :: Db) -> [sql, fs_write, time] Result[Unit, Str] {
   match reg.register(db, "depot-north", "depot", "Depot North", base_url(8110), ["charging"]) {
     Err(e) => Err(e),
     Ok(_) => match reg.register(db, "depot-south", "depot", "Depot South", base_url(8111), ["charging"]) {
@@ -47,12 +74,9 @@ fn register_agents(db :: sql.Db) -> [sql, fs_write] Result[Unit, Str] {
             Err(e) => Err(e),
             Ok(_) => match reg.register(db, "tms-secondary", "tms", "TMS Secondary", base_url(8121), ["dispatch"]) {
               Err(e) => Err(e),
-              Ok(_) => {
-                let trucks := list.range(1, 21)
-                list.fold_result(trucks, unit, fn (_acc :: Unit, n :: Int) -> [sql, fs_write] Result[Unit, Str] {
-                  reg.register(db, truck_id(n), "truck", str.concat("Truck ", int.to_str(n)), base_url(8100 + n), ["transport"])
-                })
-              },
+              Ok(_) => fold_ok(list.range(1, 21), fn (n :: Int) -> [sql, fs_write, time] Result[Unit, Str] {
+                reg.register(db, truck_id(n), "truck", str.concat("Truck ", int.to_str(n)), base_url(8100 + n), ["transport"])
+              }),
             },
           },
         },
@@ -61,51 +85,55 @@ fn register_agents(db :: sql.Db) -> [sql, fs_write] Result[Unit, Str] {
   }
 }
 
-fn wire_tms(db :: sql.Db) -> [sql, fs_write, crypto] Result[Unit, Str] {
-  let group1 := list.range(1, 11)
-  match list.fold_result(group1, unit, fn (_acc :: Unit, n :: Int) -> [sql, fs_write, crypto] Result[Unit, Str] {
+fn wire_tms(db :: Db) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+  match fold_ok_n_crypto(list.range(1, 11), fn (n :: Int) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
     match rel.add(db, truck_id(n), "tms-primary", "contracted", "{}") {
       Err(e) => Err(e),
       Ok(_) => rel.add(db, truck_id(n), "tms-secondary", "freelance", "{}"),
     }
   }) {
     Err(e) => Err(e),
-    Ok(_) => {
-      let group2 := list.range(11, 21)
-      list.fold_result(group2, unit, fn (_acc :: Unit, n :: Int) -> [sql, fs_write, crypto] Result[Unit, Str] {
-        match rel.add(db, truck_id(n), "tms-secondary", "contracted", "{}") {
-          Err(e) => Err(e),
-          Ok(_) => rel.add(db, truck_id(n), "tms-primary", "freelance", "{}"),
-        }
-      })
+    Ok(_) => fold_ok_n_crypto(list.range(11, 21), fn (n :: Int) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+      match rel.add(db, truck_id(n), "tms-secondary", "contracted", "{}") {
+        Err(e) => Err(e),
+        Ok(_) => rel.add(db, truck_id(n), "tms-primary", "freelance", "{}"),
+      }
+    }),
+  }
+}
+
+fn wire_group(db :: Db, trucks :: List[Int], depots :: List[Str]) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+  fold_ok_n_crypto(trucks, fn (n :: Int) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+    fold_ok_str(depots, fn (depot_id :: Str) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+      rel.add(db, truck_id(n), depot_id, "preferred_charger", "{}")
+    })
+  })
+}
+
+fn wire_depots(db :: Db) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+  match wire_group(db, list.range(1, 6), ["depot-north", "depot-west"]) {
+    Err(e) => Err(e),
+    Ok(_) => match wire_group(db, list.range(6, 11), ["depot-south", "depot-west"]) {
+      Err(e) => Err(e),
+      Ok(_) => match wire_group(db, list.range(11, 16), ["depot-east", "depot-north"]) {
+        Err(e) => Err(e),
+        Ok(_) => wire_group(db, list.range(16, 21), ["depot-south", "depot-east"]),
+      },
     },
   }
 }
 
-fn wire_depots(db :: sql.Db) -> [sql, fs_write, crypto] Result[Unit, Str] {
-  let groups := [(list.range(1, 6), ["depot-north", "depot-west"]), (list.range(6, 11), ["depot-south", "depot-west"]), (list.range(11, 16), ["depot-east", "depot-north"]), (list.range(16, 21), ["depot-south", "depot-east"])]
-  list.fold_result(groups, unit, fn (_acc :: Unit, pair :: (List[Int], List[Str])) -> [sql, fs_write, crypto] Result[Unit, Str] {
-    match pair {
-      (trucks, depots) => list.fold_result(trucks, unit, fn (_a :: Unit, n :: Int) -> [sql, fs_write, crypto] Result[Unit, Str] {
-        list.fold_result(depots, unit, fn (_b :: Unit, depot_id :: Str) -> [sql, fs_write, crypto] Result[Unit, Str] {
-          rel.add(db, truck_id(n), depot_id, "preferred_charger", "{}")
-        })
-      }),
-    }
-  })
-}
-
-fn wire_depot_reporting(db :: sql.Db) -> [sql, fs_write, crypto] Result[Unit, Str] {
+fn wire_depot_reporting(db :: Db) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
   let depots := ["depot-north", "depot-south", "depot-east", "depot-west"]
   let tmss := ["tms-primary", "tms-secondary"]
-  list.fold_result(depots, unit, fn (_a :: Unit, depot_id :: Str) -> [sql, fs_write, crypto] Result[Unit, Str] {
-    list.fold_result(tmss, unit, fn (_b :: Unit, tms_id :: Str) -> [sql, fs_write, crypto] Result[Unit, Str] {
+  fold_ok_str(depots, fn (depot_id :: Str) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
+    fold_ok_str(tmss, fn (tms_id :: Str) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
       rel.add(db, depot_id, tms_id, "reporting", "{}")
     })
   })
 }
 
-fn run(db :: sql.Db) -> [sql, fs_write, crypto] Result[Unit, Str] {
+fn run(db :: Db) -> [sql, fs_write, crypto, random, time] Result[Unit, Str] {
   match register_agents(db) {
     Err(e) => Err(e),
     Ok(_) => match wire_tms(db) {

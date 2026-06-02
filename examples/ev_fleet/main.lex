@@ -126,7 +126,6 @@ fn mount_agent(r :: router.Router, agent_def :: srv.AgentDef, agent_id :: Str) -
 
 fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto] Unit {
   let port := serve_port()
-  let db := sql.open(db_path())
   let model := model_name()
   let o_url := ollama_url()
   let t_url := tms_url()
@@ -140,63 +139,53 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
   let __p5 := io.print(str.concat("  charge:      ", c_url))
   let __p6 := io.print(str.concat("  telemetry:   ", tel_url))
   let __p7 := io.print(str.concat("  logistics:   ", log_url))
-  match migrate.run(db) {
-    Err(e) => io.print(str.concat("FATAL migrate: ", e)),
-    Ok(_) => {
-      match seed.run(db) {
-        Err(e) => io.print(str.concat("WARN seed: ", e)),
-        Ok(_) => io.print("  registry seeded."),
-      }
-      let provider := providers.ollama_at(o_url)
-      let truck_nums := list.range(1, 21)
-      let truck_defs := list.map(truck_nums, fn (n :: Int) -> srv.AgentDef {
-        let truck_id := str.concat("truck-", if n < 10 {
-          str.concat("0", int.to_str(n))
-        } else {
-          int.to_str(n)
-        })
-        truck_agent.make_agent_def(db, truck_id, agent_base_url(port, truck_id), t_url, tel_url, log_url, provider, model)
-      })
-      let depot_ids := ["depot-north", "depot-south", "depot-east", "depot-west"]
-      let depot_defs := list.map(depot_ids, fn (depot_id :: Str) -> srv.AgentDef {
-        depot_agent.make_agent_def(db, depot_id, agent_base_url(port, depot_id), c_url, provider, model)
-      })
-      let tms_ids := ["tms-primary", "tms-secondary"]
-      let tms_defs := list.map(tms_ids, fn (tms_id :: Str) -> srv.AgentDef {
-        tms_agent.make_agent_def(db, tms_id, agent_base_url(port, tms_id), t_url, provider, model)
-      })
-      let all_defs := list.concat(truck_defs, list.concat(depot_defs, tms_defs))
-      let all_ids := list.concat(list.map(truck_nums, fn (n :: Int) -> Str {
-        str.concat("truck-", if n < 10 {
-          str.concat("0", int.to_str(n))
-        } else {
-          int.to_str(n)
-        })
-      }), list.concat(depot_ids, tms_ids))
-      let zipped := list.zip(all_defs, all_ids)
-      let r := list.fold(zipped, router.new(), fn (acc :: router.Router, pair :: (srv.AgentDef, Str)) -> router.Router {
-        match pair {
-          (def, id) => mount_agent(acc, def, id),
+  match sql.open(db_path()) {
+    Err(e) => io.print(str.concat("FATAL open db: ", e.message)),
+    Ok(db) => match migrate.run(db) {
+      Err(e) => io.print(str.concat("FATAL migrate: ", e)),
+      Ok(_) => {
+        match seed.run(db) {
+          Err(e) => io.print(str.concat("WARN seed: ", e)),
+          Ok(_) => io.print("  registry seeded."),
         }
-      })
-      let otlp_url := match env.get("OTLP_URL") {
-        Some(u) => u,
-        None => "",
-      }
-      let otel_cfg := if str.is_empty(otlp_url) {
-        exp.stdout_config("lex-soft")
-      } else {
-        exp.otlp_config(otlp_url, "lex-soft")
-      }
-      let r := router.use_mw(r, mw.otel(otel_cfg))
-      let __p8 := io.print(str.concat("  agents:  ", int.to_str(list.len(all_defs))))
-      let __p9 := io.print("  ready — A2A endpoints at /agents/:id/")
-      let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
-        let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
-        let result := router.dispatch(r, raw)
-        { status: result.status, body: BodyStr(result.body), headers: result.headers }
-      }
-      net.serve_fn(port, handler)
+        let provider := providers.ollama_at(o_url)
+        let truck_nums := list.range(1, 21)
+        let depot_ids := ["depot-north", "depot-south", "depot-east", "depot-west"]
+        let tms_ids := ["tms-primary", "tms-secondary"]
+        let r_t := list.fold(truck_nums, router.new(), fn (acc :: router.Router, n :: Int) -> router.Router {
+          let truck_id := str.concat("truck-", if n < 10 {
+            str.concat("0", int.to_str(n))
+          } else {
+            int.to_str(n)
+          })
+          mount_agent(acc, truck_agent.make_agent_def(db, truck_id, agent_base_url(port, truck_id), t_url, tel_url, log_url, provider, model), truck_id)
+        })
+        let r_d := list.fold(depot_ids, r_t, fn (acc :: router.Router, depot_id :: Str) -> router.Router {
+          mount_agent(acc, depot_agent.make_agent_def(db, depot_id, agent_base_url(port, depot_id), c_url, provider, model), depot_id)
+        })
+        let r := list.fold(tms_ids, r_d, fn (acc :: router.Router, tms_id :: Str) -> router.Router {
+          mount_agent(acc, tms_agent.make_agent_def(db, tms_id, agent_base_url(port, tms_id), t_url, provider, model), tms_id)
+        })
+        let agent_count := list.len(truck_nums) + list.len(depot_ids) + list.len(tms_ids)
+        let otlp_url := match env.get("OTLP_URL") {
+          Some(u) => u,
+          None => "",
+        }
+        let otel_cfg := if str.is_empty(otlp_url) {
+          exp.stdout_config("lex-soft")
+        } else {
+          exp.otlp_config(otlp_url, "lex-soft")
+        }
+        let r := router.use_mw(r, mw.otel(otel_cfg))
+        let __p8 := io.print(str.concat("  agents:  ", int.to_str(agent_count)))
+        let __p9 := io.print("  ready — A2A endpoints at /agents/:id/")
+        let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
+          let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
+          let result := router.dispatch(r, raw)
+          { status: result.status, body: BodyStr(result.body), headers: result.headers }
+        }
+        net.serve_fn(port, handler)
+      },
     },
   }
 }

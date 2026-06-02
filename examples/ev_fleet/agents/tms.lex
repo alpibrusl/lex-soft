@@ -14,6 +14,8 @@ import "lex-schema/json_value" as jv
 
 import "lex-schema/schema" as sch
 
+import "lex-schema/error" as e
+
 import "lex-spec/capability" as cap
 
 import "lex-llm/src/tool" as t
@@ -44,15 +46,15 @@ fn tms_capability() -> cap.Capability {
 }
 
 fn make_tools(tms_url :: Str) -> List[t.Tool] {
-  [t.define("get_pending_orders", "Get orders waiting to be assigned to a truck.", { title: "GetPendingOrders", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  [t.define("get_pending_orders", "Get orders waiting to be assigned to a truck.", { title: "GetPendingOrders", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(tms_url, "/api/v1/orders?status=pending")))
-  }), t.define("get_order_details", "Get full details for a specific order: origin, destination, weight, deadlines.", { title: "GetOrderDetails", description: "Order lookup.", fields: [sch.required_str("order_id", [])] }, fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("get_order_details", "Get full details for a specific order: origin, destination, weight, deadlines.", { title: "GetOrderDetails", description: "Order lookup.", fields: [sch.required_str("order_id", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let id := match jv.get_field(args, "order_id") {
       Some(JStr(s)) => s,
       _ => "",
     }
     Ok(http_get_json(str.concat(tms_url, str.concat("/api/v1/orders/", id))))
-  }), t.define("assign_order", "Assign an order to a specific truck. Returns the assignment record.", { title: "AssignOrder", description: "Order assignment.", fields: [sch.required_str("order_id", []), sch.required_str("truck_id", [])] }, fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("assign_order", "Assign an order to a specific truck. Returns the assignment record.", { title: "AssignOrder", description: "Order assignment.", fields: [sch.required_str("order_id", []), sch.required_str("truck_id", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let body := jv.stringify(args)
     match http.post(str.concat(tms_url, "/api/v1/assignments"), bytes.from_str(body), "application/json") {
       Err(_) => Ok(JObj([("error", JStr("unreachable"))])),
@@ -64,7 +66,7 @@ fn make_tools(tms_url :: Str) -> List[t.Tool] {
         },
       },
     }
-  }), t.define("get_fleet_status", "Get status summary for all vehicles in the fleet.", { title: "GetFleetStatus", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("get_fleet_status", "Get status summary for all vehicles in the fleet.", { title: "GetFleetStatus", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(tms_url, "/api/v1/vehicles")))
   })]
 }

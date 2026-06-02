@@ -29,6 +29,8 @@ import "std.env" as env
 
 import "std.io" as io
 
+import "lex-llm/src/provider" as prov
+
 import "lex-llm/src/providers" as providers
 
 import "lex-agent/src/server" as srv
@@ -77,7 +79,7 @@ fn agent_kind(agent_id :: Str) -> Str {
   }
 }
 
-fn build_agent(db :: Db, agent_id :: Str, port :: Int, t_url :: Str, c_url :: Str, tel_url :: Str, log_url :: Str, provider :: providers.Provider, model :: Str) -> Result[srv.AgentDef, Str] {
+fn build_agent(db :: Db, agent_id :: Str, port :: Int, t_url :: Str, c_url :: Str, tel_url :: Str, log_url :: Str, provider :: prov.Provider, model :: Str) -> Result[srv.AgentDef, Str] {
   let base := agent_base_url(port, agent_id)
   let kind := agent_kind(agent_id)
   if kind == "truck" {
@@ -106,7 +108,6 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
       Some(n) => n,
       None => 8100,
     }
-    let db := sql.open(get_env("DB_PATH", "ev_fleet.db"))
     let model := get_env("OLLAMA_MODEL", "gemma4:latest")
     let o_url := get_env("OLLAMA_URL", "http://localhost:11434")
     let t_url := get_env("TMS_URL", "http://localhost:8200")
@@ -114,21 +115,24 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
     let tel_url := get_env("TELEMETRY_URL", "http://localhost:8300")
     let log_url := get_env("LOGISTICS_URL", "http://localhost:8400")
     let __p1 := io.print(str.concat("=== EV Fleet MCP server — agent: ", agent_id))
-    match migrate.run(db) {
-      Err(e) => io.print(str.concat("FATAL migrate: ", e)),
-      Ok(_) => {
-        let __seed := match seed.run(db) {
-          Err(e) => io.print(str.concat("WARN seed: ", e)),
-          Ok(_) => (),
-        }
-        let provider := providers.ollama_at(o_url)
-        match build_agent(db, agent_id, port, t_url, c_url, tel_url, log_url, provider, model) {
-          Err(e) => io.print(str.concat("error: ", e)),
-          Ok(agent_def) => {
-            let __p2 := io.print("  MCP stdio ready — waiting for client connection")
-            cmd.run_mcp(agent_def)
-          },
-        }
+    match sql.open(get_env("DB_PATH", "ev_fleet.db")) {
+      Err(e) => io.print(str.concat("FATAL open db: ", e.message)),
+      Ok(db) => match migrate.run(db) {
+        Err(e) => io.print(str.concat("FATAL migrate: ", e)),
+        Ok(_) => {
+          let __seed := match seed.run(db) {
+            Err(e) => io.print(str.concat("WARN seed: ", e)),
+            Ok(_) => (),
+          }
+          let provider := providers.ollama_at(o_url)
+          match build_agent(db, agent_id, port, t_url, c_url, tel_url, log_url, provider, model) {
+            Err(e) => io.print(str.concat("error: ", e)),
+            Ok(agent_def) => {
+              let __p2 := io.print("  MCP stdio ready — waiting for client connection")
+              cmd.run_mcp(agent_def)
+            },
+          }
+        },
       },
     }
   }

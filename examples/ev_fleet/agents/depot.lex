@@ -14,6 +14,8 @@ import "lex-schema/json_value" as jv
 
 import "lex-schema/schema" as sch
 
+import "lex-schema/error" as e
+
 import "lex-spec/capability" as cap
 
 import "lex-llm/src/tool" as t
@@ -44,13 +46,13 @@ fn depot_capability() -> cap.Capability {
 }
 
 fn make_tools(charge_url :: Str) -> List[t.Tool] {
-  [t.define("get_available_chargers", "List chargers at this depot that are currently free and ready.", { title: "GetAvailableChargers", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  [t.define("get_available_chargers", "List chargers at this depot that are currently free and ready.", { title: "GetAvailableChargers", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(charge_url, "/api/v1/chargers?status=available")))
-  }), t.define("get_charger_sessions", "List currently active charging sessions at this depot.", { title: "GetChargerSessions", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("get_charger_sessions", "List currently active charging sessions at this depot.", { title: "GetChargerSessions", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(charge_url, "/api/v1/chargers?status=occupied")))
-  }), t.define("get_grid_load", "Get current power draw (kW) and budget cap for this depot's grid connection.", { title: "GetGridLoad", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("get_grid_load", "Get current power draw (kW) and budget cap for this depot's grid connection.", { title: "GetGridLoad", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(charge_url, "/api/v1/grid-status")))
-  }), t.define("reserve_charger", "Reserve a specific charger for an incoming truck. Returns session_id on success.", { title: "ReserveCharger", description: "Charger reservation parameters.", fields: [sch.required_str("vin", []), sch.required_str("charger_id", []), sch.required_float("target_soc_pct", []), sch.required_float("available_minutes", [])] }, fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("reserve_charger", "Reserve a specific charger for an incoming truck. Returns session_id on success.", { title: "ReserveCharger", description: "Charger reservation parameters.", fields: [sch.required_str("vin", []), sch.required_str("charger_id", []), sch.required_float("target_soc_pct", []), sch.required_float("available_minutes", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let body := jv.stringify(args)
     match http.post(str.concat(charge_url, "/api/v1/charge-schedule"), bytes.from_str(body), "application/json") {
       Err(_) => Ok(JObj([("error", JStr("unreachable"))])),

@@ -17,6 +17,8 @@ import "lex-schema/json_value" as jv
 
 import "lex-schema/schema" as sch
 
+import "lex-schema/error" as e
+
 import "lex-spec/capability" as cap
 
 import "lex-llm/src/tool" as t
@@ -47,11 +49,11 @@ fn truck_capability() -> cap.Capability {
 }
 
 fn make_tools(truck_id :: Str, tms_url :: Str, telemetry_url :: Str, logistics_url :: Str) -> List[t.Tool] {
-  [t.define("get_telemetry", "Get live telemetry (SoC%, odometer, speed, status) for this vehicle.", { title: "GetTelemetry", description: "No parameters needed.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  [t.define("get_telemetry", "Get live telemetry (SoC%, odometer, speed, status) for this vehicle.", { title: "GetTelemetry", description: "No parameters needed.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(telemetry_url, str.concat("/vehicles/", str.concat(truck_id, "/telemetry")))))
-  }), t.define("get_pending_orders", "Get orders pending assignment or currently assigned to this truck from TMS.", { title: "GetPendingOrders", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("get_pending_orders", "Get orders pending assignment or currently assigned to this truck from TMS.", { title: "GetPendingOrders", description: "No parameters.", fields: [] }, fn (_args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(http_get_json(str.concat(tms_url, str.concat("/api/v1/orders?status=pending&assigned_to=", truck_id))))
-  }), t.define("estimate_route_energy", "Estimate energy (kWh) needed for a route using the logistics CAW model.", { title: "EstimateRouteEnergy", description: "Route energy estimation.", fields: [sch.required_str("origin", []), sch.required_str("destination", [])] }, fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("estimate_route_energy", "Estimate energy (kWh) needed for a route using the logistics CAW model.", { title: "EstimateRouteEnergy", description: "Route energy estimation.", fields: [sch.required_str("origin", []), sch.required_str("destination", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let origin := match jv.get_field(args, "origin") {
       Some(JStr(s)) => s,
       _ => "",
@@ -71,7 +73,7 @@ fn make_tools(truck_id :: Str, tms_url :: Str, telemetry_url :: Str, logistics_u
         },
       },
     }
-  }), t.define("report_status", "Report truck status to TMS (available, on_route, charging, breakdown).", { title: "ReportStatus", description: "Status update.", fields: [sch.required_str("status", []), sch.optional(sch.required_str("notes", []))] }, fn (args :: jv.Json) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[jv.Json, Errors] {
+  }), t.define("report_status", "Report truck status to TMS (available, on_route, charging, breakdown).", { title: "ReportStatus", description: "Status update.", fields: [sch.required_str("status", []), sch.optional(sch.required_str("notes", []))] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let status := match jv.get_field(args, "status") {
       Some(JStr(s)) => s,
       _ => "available",
