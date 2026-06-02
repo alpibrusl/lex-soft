@@ -2,11 +2,11 @@ version: "3.9"
 
 # lex-soft platform + EV fleet demo
 #
-# Build the lex binary first (from workspace root):
-#   cd ../lex-lang && cargo build --release
-#
-# Then start everything:
+# Start everything (builds from source — first run takes ~10 min for Rust):
 #   docker compose up --build
+#
+# Subsequent builds are fast: the lex-builder layer is cached and the
+# workspace .dockerignore keeps the build context small (~100 MB).
 #
 # Dashboard:  http://localhost:9000/
 # Fleet API:  http://localhost:8100/
@@ -54,6 +54,8 @@ services:
     build:
       context: ..
       dockerfile: lex-soft/examples/ev_fleet/Dockerfile
+      cache_from:
+        - lex-soft-platform:latest
     restart: unless-stopped
     ports:
       - "8100:8100"

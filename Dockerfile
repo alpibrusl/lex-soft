@@ -1,20 +1,34 @@
 # lex-soft Dockerfile
-#
-# Build context must be the workspace root (one level above lex-soft):
+# Build context: workspace root
 #   docker build -f lex-soft/Dockerfile -t lex-soft .
-#
-# Handled automatically by docker-compose.yml (context: ../).
 
+ARG RUST_VERSION=1.94
+
+# ── Stage 1: dependency cache (cargo-chef) ─────────────────────────
+FROM rust:${RUST_VERSION}-bookworm AS chef
+WORKDIR /build
+RUN cargo install cargo-chef --locked --version 0.1.71
+
+FROM chef AS planner
+COPY lex-lang/ .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 2: compile lex (exported as lex-builder for reuse) ───────
+FROM chef AS lex-builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --bin lex
+COPY lex-lang/ .
+RUN cargo build --release --bin lex && strip /build/target/release/lex
+
+# ── Stage 3: runtime ───────────────────────────────────────────────
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY lex-lang/target/release/lex /usr/local/bin/lex
-RUN chmod +x /usr/local/bin/lex
+COPY --from=lex-builder /build/target/release/lex /usr/local/bin/lex
 
-# Platform dependencies
 COPY lex-schema/  /app/lex-schema/
 COPY lex-web/     /app/lex-web/
 COPY lex-llm/     /app/lex-llm/
