@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY lex-lang/target/linux/lex /usr/local/bin/lex
 
 COPY lex-schema/  /app/lex-schema/
+COPY lex-trail/   /app/lex-trail/
+COPY lex-crypto/  /app/lex-crypto/
+COPY lex-orm/     /app/lex-orm/
 COPY lex-web/     /app/lex-web/
 COPY lex-llm/     /app/lex-llm/
 COPY lex-agent/   /app/lex-agent/
