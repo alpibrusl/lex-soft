@@ -59,6 +59,8 @@ import "../trace" as trace
 
 import "./inbox" as inbox
 
+import "./dashboard" as dashboard
+
 # ---- Route handlers -----------------------------------------------
 fn handle_lookup(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   match ctx.path_param(c, "id") {
@@ -258,10 +260,16 @@ fn handle_health(db :: Db, _c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   }
 }
 
+# ---- Route handlers (dashboard) ----------------------------------
+fn handle_dashboard(_c :: ctx.Ctx) -> resp.Response {
+  resp.html(dashboard.page())
+}
+
 # ---- Router setup -----------------------------------------------
 fn build_router(db :: Db) -> router.Router {
   let r0 := router.new()
-  let r1 := router.route_effectful(r0, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let rdash := router.route(r0, "GET", "/", handle_dashboard)
+  let r1 := router.route_effectful(rdash, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_lookup(db, c)
   })
   let r2 := router.route_effectful(r1, "GET", "/v1/state/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
