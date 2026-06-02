@@ -8,6 +8,8 @@
 
 import "std.sql" as sql
 
+import "lex-jobs/src/jobs" as jobs
+
 fn ddl_agents() -> Str {
   "CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, inbox_url TEXT NOT NULL, capabilities_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', registered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)"
 }
@@ -50,7 +52,10 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
           Err(e) => Err(e),
           Ok(_) => match exec_ddl(db, ddl_traces()) {
             Err(e) => Err(e),
-            Ok(_) => exec_ddl(db, ddl_traces_idx()),
+            Ok(_) => match exec_ddl(db, ddl_traces_idx()) {
+              Err(e) => Err(e),
+              Ok(_) => jobs.init_schema(db),
+            },
           },
         },
       },
