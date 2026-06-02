@@ -1,0 +1,26 @@
+# Dockerfile.lex-builder — builds the lex binary for Linux and exports it.
+#
+# Used by build-lex-linux.sh:
+#   docker build -f lex-soft/Dockerfile.lex-builder --output type=local,dest=lex-lang/target/linux .
+#
+# The result (lex-lang/target/linux/lex) is then copied into the runtime
+# images by the regular Dockerfiles.
+
+ARG RUST_VERSION=1.94
+
+FROM rust:${RUST_VERSION}-bookworm AS chef
+WORKDIR /build
+RUN cargo install cargo-chef --locked --version 0.1.71
+
+FROM chef AS planner
+COPY lex-lang/ .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --bin lex
+COPY lex-lang/ .
+RUN cargo build --release --bin lex && strip /build/target/release/lex
+
+FROM scratch
+COPY --from=builder /build/target/release/lex /lex

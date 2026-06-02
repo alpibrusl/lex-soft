@@ -2,11 +2,13 @@ version: "3.9"
 
 # lex-soft platform + EV fleet demo
 #
-# Start everything (builds from source — first run takes ~10 min for Rust):
-#   docker compose up --build
+# One-time setup — build the Linux lex binary:
+#   ./build-lex-linux.sh
 #
-# Subsequent builds are fast: the lex-builder layer is cached and the
-# workspace .dockerignore keeps the build context small (~100 MB).
+# Then start (fast — just copies the pre-built binary):
+#   docker compose up --build -d
+#
+# Re-run build-lex-linux.sh only when lex-lang/ changes.
 #
 # Dashboard:  http://localhost:9000/
 # Fleet API:  http://localhost:8100/
