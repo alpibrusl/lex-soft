@@ -1,0 +1,110 @@
+version: "3.9"
+
+# lex-soft platform + EV fleet demo
+#
+# Build the lex binary first (from workspace root):
+#   cd ../lex-lang && cargo build --release
+#
+# Then start everything:
+#   docker compose up --build
+#
+# Dashboard:  http://localhost:9000/
+# Fleet API:  http://localhost:8100/
+
+services:
+
+  # ── Postgres ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lexsoft
+      POSTGRES_USER: lex
+      POSTGRES_PASSWORD: lex
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lex -d lexsoft"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Platform server ───────────────────────────────────────────────
+  platform:
+    build:
+      context: ..
+      dockerfile: lex-soft/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      PORT: "9000"
+      DB_URL: "postgres://lex:lex@postgres:5432/lexsoft"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/v1/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ── EV fleet demo agents ──────────────────────────────────────────
+  fleet:
+    build:
+      context: ..
+      dockerfile: lex-soft/examples/ev_fleet/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    environment:
+      PORT: "8100"
+      DB_PATH: "/data/ev_fleet.db"
+      OLLAMA_URL: "${OLLAMA_URL:-http://host.docker.internal:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-gemma4:latest}"
+    volumes:
+      - fleetdata:/data
+    depends_on:
+      platform:
+        condition: service_healthy
+
+  # ── One-shot seed (registers agents + fires demo traffic) ─────────
+  seed:
+    image: curlimages/curl:8.7.1
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        BASE=http://platform:9000
+        post() { curl -sf -X POST -H "Content-Type: application/json" -d "$$2" "$$BASE$$1" > /dev/null; }
+        echo "registering agents..."
+        post /v1/agents '{"id":"tms-primary","kind":"tms","name":"TMS Primary","inbox_url":"http://fleet:8120","capabilities":["dispatch"]}'
+        post /v1/agents '{"id":"tms-secondary","kind":"tms","name":"TMS Secondary","inbox_url":"http://fleet:8121","capabilities":["dispatch"]}'
+        post /v1/agents '{"id":"depot-north","kind":"depot","name":"Depot North","inbox_url":"http://fleet:8110","capabilities":["charging"]}'
+        post /v1/agents '{"id":"depot-south","kind":"depot","name":"Depot South","inbox_url":"http://fleet:8111","capabilities":["charging"]}'
+        post /v1/agents '{"id":"depot-east","kind":"depot","name":"Depot East","inbox_url":"http://fleet:8112","capabilities":["charging"]}'
+        post /v1/agents '{"id":"depot-west","kind":"depot","name":"Depot West","inbox_url":"http://fleet:8113","capabilities":["charging"]}'
+        i=1; while [ $$i -le 20 ]; do
+          n=$$(printf '%02d' $$i)
+          post /v1/agents "{\"id\":\"truck-$$n\",\"kind\":\"truck\",\"name\":\"Truck $$n\",\"inbox_url\":\"\",\"capabilities\":[\"transport\"]}"
+          i=$$((i+1))
+        done
+        echo "heartbeats..."
+        for id in tms-primary tms-secondary depot-north depot-south depot-east depot-west; do
+          post "/v1/agents/$$id/heartbeat" '{}'
+        done
+        echo "demo messages..."
+        post /v1/messages '{"from":"truck-01","to":"tms-primary","topic":"dispatch_request","body":"{\"load\":\"LDN-AMS-001\"}"}'
+        post /v1/messages '{"from":"truck-07","to":"depot-south","topic":"charge_request","body":"{\"soc\":18,\"target_soc\":90}"}'
+        post /v1/messages '{"from":"tms-primary","to":"truck-03","topic":"assignment","body":"{\"job\":\"JOB-882\"}"}'
+        post /v1/messages '{"from":"truck-15","to":"depot-east","topic":"charge_request","body":"{\"soc\":9,\"target_soc\":80}"}'
+        post /v1/messages '{"from":"depot-north","to":"tms-secondary","topic":"capacity_report","body":"{\"free_bays\":4}"}'
+        echo "seed done."
+    depends_on:
+      platform:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  fleetdata:
