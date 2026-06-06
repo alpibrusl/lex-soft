@@ -172,8 +172,8 @@ fn step(db :: Db, def :: AgentDef, msg_json :: Str) -> [io, time, sql, concurren
   let _t1 := trace.record(db, run_id, def.id, "received", msg_json)
   let sys := build_system_prompt(def, state)
   let all_tools := list.concat(platform_tools(db, def.id), def.tools)
-  let the_model := { provider: def.provider.name, model: def.model_name }
-  let llm_def := { name: def.id, goal: sys, model: the_model, provider: def.provider, tools: all_tools, options: llm_agent.default_options() }
+  let the_model := prov.make_model_ref(def.provider.name, def.model_name)
+  let llm_def := { name: def.id, goal: sys, model: the_model, provider: def.provider, tools: all_tools, options: llm_agent.default_options(), permission_spec: None }
   let conv := [llm_msg.UserMsg(msg_json)]
   let _t2 := trace.record(db, run_id, def.id, "llm_start", "{}")
   let steps := iter.to_list(llm_agent.run_loop(llm_def, conv))
