@@ -6,15 +6,21 @@
 
 import "std.sql" as sql
 
+import "std.str" as str
+
 import "std.time" as time
 
 import "std.list" as list
 
 type StateRow = { state_json :: Str }
 
+fn sq(s :: Str) -> Str {
+  str.replace(s, "'", "''")
+}
+
 fn load(db :: Db, agent_id :: Str) -> [sql, fs_read] Str {
-  let q := "SELECT state_json FROM agent_state WHERE agent_id=?"
-  let rows :: Result[List[StateRow], SqlError] := sql.query(db, q, [PStr(agent_id)])
+  let q := str.join(["SELECT state_json FROM agent_state WHERE agent_id='", sq(agent_id), "'"], "")
+  let rows :: Result[List[StateRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(_) => "{}",
     Ok(rs) => match list.head(rs) {
@@ -26,8 +32,8 @@ fn load(db :: Db, agent_id :: Str) -> [sql, fs_read] Str {
 
 fn save(db :: Db, agent_id :: Str, state_json :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  let q := "INSERT INTO agent_state (agent_id, state_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at"
-  match sql.exec(db, q, [PStr(agent_id), PStr(state_json), PStr(now)]) {
+  let q := str.join(["INSERT INTO agent_state (agent_id, state_json, updated_at) VALUES ('", sq(agent_id), "', '", sq(state_json), "', '", now, "') ON CONFLICT(agent_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at"], "")
+  match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }

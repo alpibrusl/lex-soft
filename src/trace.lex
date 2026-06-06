@@ -16,11 +16,15 @@ fn new_run_id() -> [random, crypto] Str {
   crypto.random_str_hex(16)
 }
 
+fn sq(s :: Str) -> Str {
+  str.replace(s, "'", "''")
+}
+
 fn record(db :: Db, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str) -> [sql, fs_write, time, random, crypto] Unit {
   let id := new_run_id()
   let now := time.now_str()
-  let q := "INSERT INTO traces (id, run_id, agent_id, event_kind, data_json, ts) VALUES (?, ?, ?, ?, ?, ?)"
-  let __lex_discard_1 := sql.exec(db, q, [PStr(id), PStr(run_id), PStr(agent_id), PStr(event_kind), PStr(data_json), PStr(now)])
+  let q := str.join(["INSERT INTO traces (id, run_id, agent_id, event_kind, data_json, ts) VALUES ('", id, "', '", sq(run_id), "', '", sq(agent_id), "', '", sq(event_kind), "', '", sq(data_json), "', '", now, "')"], "")
+  let __lex_discard_1 := sql.exec(db, q, [])
   ()
 }
 

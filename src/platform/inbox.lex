@@ -26,29 +26,77 @@ import "std.str" as str
 
 import "std.int" as int
 
+import "lex-schema/json_value" as jv
+
 fn pull_queue(agent_id :: Str) -> Str {
   str.concat("pull:", agent_id)
 }
 
-# Route an incoming message to the correct queue for `to_agent_id`.
-fn deliver(db :: Db, to_agent_id :: Str, payload :: Str) -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
-  let mode := match reg.find_by_id(db, to_agent_id) {
-    Err(_) => "pull",
-    Ok(None) => "pull",
+# Build an A2A JSON-RPC tasks/send message from a platform envelope.
+fn build_a2a_msg(from :: Str, topic :: Str, body :: Str) -> Str {
+  let payload := if str.is_empty(body) { "{}" } else { body }
+  let text := str.join(["From: ", from, "\nTopic: ", topic, "\nPayload: ", payload], "")
+  jv.stringify(JObj([
+    ("jsonrpc", JStr("2.0")),
+    ("id", JStr("1")),
+    ("method", JStr("tasks/send")),
+    ("params", JObj([
+      ("id", JStr(str.concat("msg-", from))),
+      ("contextId", JStr(str.concat("ctx-", from))),
+      ("skill", JStr("handle")),
+      ("message", JObj([
+        ("role", JStr("user")),
+        ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(text))])]))
+      ]))
+    ]))
+  ]))
+}
+
+# Route an incoming message to the correct delivery path for `to_agent_id`.
+#   push — agent has a reachable inbox_url: deliver synchronously via A2A HTTP.
+#   pull — inbox_url empty: enqueue in pull:{agent_id} for the agent to poll.
+fn deliver(db :: Db, to_agent_id :: Str, payload :: Str) -> [sql, fs_read, fs_write, time, net] Result[Unit, Str] {
+  match reg.find_by_id(db, to_agent_id) {
+    Err(_) => match jobs.enqueue(db, pull_queue(to_agent_id), "pull", payload) {
+      Err(e) => Err(e),
+      Ok(_) => Ok(()),
+    },
+    Ok(None) => match jobs.enqueue(db, pull_queue(to_agent_id), "pull", payload) {
+      Err(e) => Err(e),
+      Ok(_) => Ok(()),
+    },
     Ok(Some(ref)) => if str.is_empty(ref.inbox_url) {
-      "pull"
+      match jobs.enqueue(db, pull_queue(to_agent_id), "pull", payload) {
+        Err(e) => Err(e),
+        Ok(_) => Ok(()),
+      }
     } else {
-      "push"
-    },
-  }
-  match mode {
-    "push" => match jobs.enqueue(db, "push", to_agent_id, payload) {
-      Err(e) => Err(e),
-      Ok(_) => Ok(()),
-    },
-    _ => match jobs.enqueue(db, pull_queue(to_agent_id), "pull", payload) {
-      Err(e) => Err(e),
-      Ok(_) => Ok(()),
+      let parsed := match jv.parse(payload) {
+        Err(_) => JObj([]),
+        Ok(j) => j,
+      }
+      let from := match jv.get_field(parsed, "from") {
+        Some(JStr(s)) => s,
+        _ => "",
+      }
+      let topic := match jv.get_field(parsed, "topic") {
+        Some(JStr(s)) => s,
+        _ => "message",
+      }
+      let body := match jv.get_field(parsed, "body") {
+        Some(JStr(s)) => s,
+        _ => "{}",
+      }
+      let a2a := build_a2a_msg(from, topic, body)
+      match http.post(ref.inbox_url, bytes.from_str(a2a), "application/json") {
+        Err(e) => Err(str.concat("push failed: ", match e {
+          TimeoutError => "timeout",
+          TlsError(m) => m,
+          NetworkError(m) => m,
+          DecodeError(m) => m,
+        })),
+        Ok(_) => Ok(()),
+      }
     },
   }
 }
