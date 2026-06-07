@@ -30,13 +30,17 @@ fn parse_agent_row(r :: AgentRow) -> AgentRef {
   { id: r.id, kind: r.kind, name: r.name, inbox_url: r.inbox_url, capabilities: cap_list, status: r.status }
 }
 
+fn sq(s :: Str) -> Str {
+  str.replace(s, "'", "''")
+}
+
 fn register(db :: Db, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
   let caps_json := jv.stringify(JList(list.map(capabilities, fn (c :: Str) -> jv.Json {
     JStr(c)
   })))
-  let q := "INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', last_seen_at=excluded.last_seen_at"
-  match sql.exec(db, q, [PStr(id), PStr(kind), PStr(name), PStr(inbox_url), PStr(caps_json), PStr(now), PStr(now)]) {
+  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'active', '", now, "', '", now, "') ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', last_seen_at=excluded.last_seen_at"], "")
+  match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -44,7 +48,8 @@ fn register(db :: Db, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, cap
 
 fn heartbeat(db :: Db, id :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  match sql.exec(db, "UPDATE agents SET last_seen_at=? WHERE id=?", [PStr(now), PStr(id)]) {
+  let q := str.join(["UPDATE agents SET last_seen_at='", now, "' WHERE id='", sq(id), "'"], "")
+  match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -52,15 +57,16 @@ fn heartbeat(db :: Db, id :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
 
 fn set_status(db :: Db, id :: Str, status :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  match sql.exec(db, "UPDATE agents SET status=?, last_seen_at=? WHERE id=?", [PStr(status), PStr(now), PStr(id)]) {
+  let q := str.join(["UPDATE agents SET status='", sq(status), "', last_seen_at='", now, "' WHERE id='", sq(id), "'"], "")
+  match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
 }
 
 fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], Str] {
-  let q := "SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE id=?"
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(id)])
+  let q := str.join(["SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE id='", sq(id), "'"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(match list.head(rs) {
@@ -71,8 +77,8 @@ fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], St
 }
 
 fn find_by_kind(db :: Db, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := "SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE kind=? AND status='active'"
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(kind)])
+  let q := str.join(["SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE kind='", sq(kind), "' AND status='active'"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {

@@ -15,6 +15,7 @@
 #   GET    /v1/messages/:id/pull        edge agent polls its inbox
 #   GET    /v1/audit                    query traces (agent_id, event_kind, since, limit)
 #   GET    /v1/health                   active agents + queue depths
+#   GET    /v1/agents                   list all agents (for dashboard)
 #
 # Background workers (started via conc.spawn in main):
 #   push_worker  — drains the "push" queue, delivers to cloud agents
@@ -161,7 +162,7 @@ fn handle_state_save(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time, random, cr
   }
 }
 
-fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time, random, crypto] resp.Response {
+fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time, random, crypto, net] resp.Response {
   match jv.parse(c.body) {
     Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
     Ok(j) => {
@@ -175,7 +176,7 @@ fn handle_send(db :: Db, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time, random,
             let from_id := str_field(j, "from")
             let topic := str_field(j, "topic")
             let __audit := trace.record_platform(db, to_id, "msg_delivered", jv.stringify(JObj([("from", JStr(from_id)), ("topic", JStr(topic))])))
-            resp.json("{\"queued\":true}")
+            resp.json("{\"delivered\":true}")
           },
         }
       }
@@ -197,6 +198,10 @@ fn handle_pull(db :: Db, c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_rea
   }
 }
 
+fn sq_str(s :: Str) -> Str {
+  str.replace(s, "'", "''")
+}
+
 fn handle_audit(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   let agent_id := ctx.query_param_or(c, "agent_id", "")
   let event_kind := ctx.query_param_or(c, "event_kind", "")
@@ -206,9 +211,23 @@ fn handle_audit(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
     Some(n) => n,
     None => 100,
   }
-  let q := "SELECT id, run_id, agent_id, event_kind, data_json, ts FROM traces WHERE (? = '' OR agent_id = ?) AND (? = '' OR event_kind = ?) AND (? = '' OR ts >= ?) ORDER BY ts DESC LIMIT ?"
-  let params := [PStr(agent_id), PStr(agent_id), PStr(event_kind), PStr(event_kind), PStr(since), PStr(since), PInt(lim)]
-  let result :: Result[List[{ id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }], SqlError] := sql.query(db, q, params)
+  let w1 := if str.is_empty(agent_id) {
+    ""
+  } else {
+    str.join([" AND agent_id='", sq_str(agent_id), "'"], "")
+  }
+  let w2 := if str.is_empty(event_kind) {
+    ""
+  } else {
+    str.join([" AND event_kind='", sq_str(event_kind), "'"], "")
+  }
+  let w3 := if str.is_empty(since) {
+    ""
+  } else {
+    str.join([" AND ts>='", sq_str(since), "'"], "")
+  }
+  let q := str.join(["SELECT id, run_id, agent_id, event_kind, data_json, ts FROM traces WHERE 1=1", w1, w2, w3, " ORDER BY ts DESC LIMIT ", int.to_str(lim)], "")
+  let result :: Result[List[{ id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }], SqlError] := sql.query(db, q, [])
   match result {
     Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
     Ok(rows) => {
@@ -260,6 +279,18 @@ fn handle_health(db :: Db, _c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   }
 }
 
+fn handle_list_agents(db :: Db, _c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+  match reg.list_all(db) {
+    Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
+    Ok(agents) => {
+      let items := list.map(agents, fn (a :: reg.AgentRef) -> jv.Json {
+        JObj([("id", JStr(a.id)), ("kind", JStr(a.kind)), ("name", JStr(a.name)), ("status", JStr(a.status))])
+      })
+      resp.json(jv.stringify(JList(items)))
+    },
+  }
+}
+
 # ---- Route handlers (dashboard) ----------------------------------
 fn handle_dashboard(_c :: ctx.Ctx) -> resp.Response {
   resp.html(dashboard.page())
@@ -296,8 +327,11 @@ fn build_router(db :: Db) -> router.Router {
   let r9 := router.route_effectful(r8, "GET", "/v1/audit", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_audit(db, c)
   })
-  router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r10 := router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_health(db, c)
+  })
+  router.route_effectful(r10, "GET", "/v1/agents", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    handle_list_agents(db, c)
   })
 }
 

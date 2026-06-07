@@ -16,11 +16,15 @@ import "std.str" as str
 
 import "std.list" as list
 
-import "std.iter" as iter
+import "std.io" as io
+
+import "std.int" as int
 
 import "std.http" as http
 
 import "std.bytes" as bytes
+
+import "std.proc" as proc
 
 import "lex-schema/json_value" as jv
 
@@ -28,15 +32,7 @@ import "lex-schema/schema" as s
 
 import "lex-schema/error" as e
 
-import "lex-llm/src/agent" as llm_agent
-
-import "lex-llm/src/message" as llm_msg
-
-import "lex-llm/src/delta" as d
-
 import "lex-llm/src/tool" as t
-
-import "lex-llm/src/provider" as prov
 
 import "lex-agent/src/server" as srv
 
@@ -55,7 +51,7 @@ import "./platform/client" as pclient
 import "./outbox" as outbox
 
 # Configuration for an LLM-driven agent.
-type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider :: prov.Provider, tools :: List[t.Tool] }
+type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, tools :: List[t.Tool] }
 
 type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str }
 
@@ -65,22 +61,6 @@ type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role ::
 type RemoteCtx = { client :: pclient.PlatformClient, local_db :: Db }
 
 type Backend = BackendLocal(Db) | BackendRemote(RemoteCtx)
-
-fn extract_answer(steps :: List[d.Step]) -> Str {
-  list.fold(steps, "", fn (acc :: Str, st :: d.Step) -> Str {
-    match st {
-      StepDone(m) => {
-        let c := llm_msg.content(m)
-        if str.is_empty(c) {
-          acc
-        } else {
-          c
-        }
-      },
-      _ => acc,
-    }
-  })
-}
 
 fn first_text(m :: msg.Message) -> Str {
   list.fold(m.parts, "", fn (acc :: Str, p :: msg.Part) -> Str {
@@ -236,15 +216,41 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let text_in := first_text(m)
     let __t1 := trace.record(tdb, run_id, cfg.id, "received", text_in)
     let peers := load_peers_backend(b, cfg.id)
-    let platform := make_platform_tools_for_backend(b, peers, cfg.id)
-    let all_tools := list.concat(platform, cfg.tools)
+    let _platform := make_platform_tools_for_backend(b, peers, cfg.id)
     let sys := build_system_prompt(cfg, state)
-    let the_model := prov.make_model_ref(cfg.provider.name, cfg.model_name)
-    let llm_def := llm_agent.make_agent(cfg.id, sys, the_model, cfg.provider, all_tools, llm_agent.default_options())
-    let conv := [llm_msg.UserMsg(text_in)]
+    let req_file := str.concat("/tmp/llm_", str.concat(cfg.id, ".json"))
+    let req_json := jv.stringify(JObj([
+      ("provider", JStr(cfg.provider_name)),
+      ("api_url", JStr(cfg.provider_url)),
+      ("api_key", JStr(cfg.provider_key)),
+      ("model", JStr(cfg.model_name)),
+      ("system", JStr(sys)),
+      ("user", JStr(text_in))
+    ]))
+    let shell_cmd := str.join([
+      "set -e\ncat > ", req_file, " <<'LEXEOF'\n",
+      req_json, "\n",
+      "LEXEOF\n",
+      "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time llm_call.lex call"
+    ], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
-    let steps := iter.to_list(llm_agent.run_loop(llm_def, conv))
-    let answer := extract_answer(steps)
+    let answer := match proc.spawn("sh", ["-c", shell_cmd]) {
+      Err(e) => str.concat("[spawn error] ", e),
+      Ok(out) => if out.exit_code != 0 {
+        str.join(["[proc exit=", int.to_str(out.exit_code), "] stderr=", out.stderr], "")
+      } else {
+        let raw := str.trim(out.stdout)
+        let stripped := match str.strip_suffix(raw, "null") {
+          Some(s) => str.trim(s),
+          None => raw,
+        }
+        if str.is_empty(stripped) {
+          str.concat("[empty llm response] stderr=", out.stderr)
+        } else {
+          stripped
+        }
+      },
+    }
     let __t3 := trace.record(tdb, run_id, cfg.id, "llm_done", answer)
     { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [] }
   }

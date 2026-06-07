@@ -41,6 +41,11 @@ fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   }
 }
 
+fn exec_ddl_tolerant(db :: Db, stmt :: Str) -> [sql, fs_write] Unit {
+  let __ignore := sql.exec(db, stmt, [])
+  ()
+}
+
 fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   match exec_ddl(db, ddl_agents()) {
     Err(e) => Err(e),
@@ -54,7 +59,10 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
             Err(e) => Err(e),
             Ok(_) => match exec_ddl(db, ddl_traces_idx()) {
               Err(e) => Err(e),
-              Ok(_) => jobs.init_schema(db),
+              Ok(_) => {
+                let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+                jobs.init_schema(db)
+              },
             },
           },
         },
