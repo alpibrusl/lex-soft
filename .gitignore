@@ -3,3 +3,8 @@
 *.sqlite-journal
 target/
 .DS_Store
+*.db
+.cli/
+std.http
+std.list
+std.sql
