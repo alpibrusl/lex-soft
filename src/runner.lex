@@ -295,6 +295,11 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       ("history", history),
       ("kind", JStr(cfg.kind)),
       ("agent_id", JStr(cfg.id)),
+      # Resolved peer snapshot so the subprocess can rebuild the mesh tools
+      # (find_peers/send_message) — enables outbound agent-to-agent in the loop.
+      ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
+        JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role))])
+      }))),
       ("tms_url", JStr(cfg.tms_url)),
       ("charge_url", JStr(cfg.charge_url)),
       ("telemetry_url", JStr(cfg.telemetry_url)),
