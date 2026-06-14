@@ -25,6 +25,7 @@ for HTTP, `std.sql` for persistence, and `std.http` for inter-agent calls.
 | `src/gate.lex`        | `Verdict = Allow \| Deny(reason) \| Inconclusive` + `check()` runner |
 | `src/a2a.lex`         | HTTP A2A sender (`std.http.post` against the peer URL map) |
 | `src/runner.lex`      | `step()` — load state → dispatch handler → run gate → execute action → save state + trace |
+| `src/llm_runner.lex`  | `run(tool_factory)` — generic agent tool-loop subprocess entry: reads `$LLM_REQ_FILE`, selects the lex-llm provider, runs `ag.run_loop`, prints `{text,tools}`. Apps supply only a tool-factory closure |
 | `src/agent.lex`       | `AgentDef` record + `mount(router, agent)` helper for lex-web |
 | `src/migrate.lex`     | SQL migrations for `agent_state` + `traces` |
 | `src/soft.lex`        | Facade re-exporting common types |

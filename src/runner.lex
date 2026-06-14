@@ -51,9 +51,63 @@ import "./platform/client" as pclient
 import "./outbox" as outbox
 
 # Configuration for an LLM-driven agent.
-type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, tools :: List[t.Tool] }
+#
+# The service URLs are threaded through to the subprocess (llm_call.lex) so it
+# can rebuild this agent's domain tools by kind and run the full tool loop.
+# Each agent kind populates only the URLs its tools use; the rest are empty.
+type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, tms_url :: Str, charge_url :: Str, telemetry_url :: Str, logistics_url :: Str, tools :: List[t.Tool] }
 
 type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str }
+
+# Parsed result of the subprocess tool loop: the final assistant text plus
+# the names of every tool the model executed (in call order).
+type LoopResult = { text :: Str, tools :: List[Str] }
+
+# User-facing fallback when the model returns nothing usable / errors / panics —
+# so an agent NEVER surfaces a raw panic dump or a blank reply to the operator.
+fn fallback_reply() -> Str {
+  "I couldn't produce a response just now (the model returned nothing usable). Please try again in a moment."
+}
+
+# Parse the subprocess stdout — a JSON object {"text":..,"tools":[..]} —
+# tolerating a trailing `null` printed by the `lex run` Unit return. Empty or
+# non-JSON output degrades to a graceful fallback message (keeping any tool
+# names so the audit still shows what ran).
+fn parse_loop_out(stdout :: Str, _stderr :: Str) -> LoopResult {
+  let raw := str.trim(stdout)
+  let stripped := match str.strip_suffix(raw, "null") {
+    Some(s) => str.trim(s),
+    None => raw,
+  }
+  if str.is_empty(stripped) {
+    { text: fallback_reply(), tools: [] }
+  } else {
+    match jv.parse(stripped) {
+      Err(_) => { text: fallback_reply(), tools: [] },
+      Ok(j) => {
+        let raw_text := match jv.get_field(j, "text") {
+          Some(JStr(s)) => s,
+          _ => "",
+        }
+        let tools := match jv.get_field(j, "tools") {
+          Some(JList(xs)) => list.fold(xs, [], fn (acc :: List[Str], x :: jv.Json) -> List[Str] {
+            match x {
+              JStr(s) => list.concat(acc, [s]),
+              _ => acc,
+            }
+          }),
+          _ => [],
+        }
+        let text := if str.is_empty(str.trim(raw_text)) {
+          fallback_reply()
+        } else {
+          raw_text
+        }
+        { text: text, tools: tools }
+      },
+    }
+  }
+}
 
 # Selects where state, peers and outbound messages go.
 #   Local  — single-process / dev: direct SQLite reads and A2A HTTP sends.
@@ -214,10 +268,22 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let run_id := trace.new_run_id()
     let state := load_state_backend(b, cfg.id)
     let text_in := first_text(m)
+    # Prior-interaction context as real conversation turns, loaded BEFORE
+    # recording the current turn so it isn't echoed back.
+    let history_json := trace.recent_messages_json(tdb, cfg.id, 8)
+    let history := match jv.parse(history_json) { Ok(h) => h, Err(_) => JList([]) }
     let __t1 := trace.record(tdb, run_id, cfg.id, "received", text_in)
     let peers := load_peers_backend(b, cfg.id)
     let _platform := make_platform_tools_for_backend(b, peers, cfg.id)
-    let sys := build_system_prompt(cfg, state)
+    let sys_base := build_system_prompt(cfg, state)
+    # Durable memory: recall the agent's remembered facts into the system prompt
+    # so they persist across conversations (distinct from the recent-turn history).
+    let mem := trace.recall_facts_text(tdb, cfg.id, 8)
+    let sys := if str.is_empty(mem) {
+      sys_base
+    } else {
+      str.concat(sys_base, str.concat("\n\nDurable memory (facts you have remembered, honor them):\n", mem))
+    }
     let req_file := str.concat("/tmp/llm_", str.concat(cfg.id, ".json"))
     let req_json := jv.stringify(JObj([
       ("provider", JStr(cfg.provider_name)),
@@ -225,32 +291,48 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       ("api_key", JStr(cfg.provider_key)),
       ("model", JStr(cfg.model_name)),
       ("system", JStr(sys)),
-      ("user", JStr(text_in))
+      ("user", JStr(text_in)),
+      ("history", history),
+      ("kind", JStr(cfg.kind)),
+      ("agent_id", JStr(cfg.id)),
+      ("tms_url", JStr(cfg.tms_url)),
+      ("charge_url", JStr(cfg.charge_url)),
+      ("telemetry_url", JStr(cfg.telemetry_url)),
+      ("logistics_url", JStr(cfg.logistics_url))
     ]))
     let shell_cmd := str.join([
       "set -e\ncat > ", req_file, " <<'LEXEOF'\n",
       req_json, "\n",
       "LEXEOF\n",
-      "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time llm_call.lex call"
+      "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"
     ], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
-    let answer := match proc.spawn("sh", ["-c", shell_cmd]) {
-      Err(e) => str.concat("[spawn error] ", e),
+    # A subprocess crash (e.g. a runtime panic on an unexpected Gemini response
+    # shape) or spawn failure must NOT surface as a raw error to the operator:
+    # show a graceful fallback, and record the raw detail to the audit as an
+    # `error` event for debugging.
+    let outcome := match proc.spawn("sh", ["-c", shell_cmd]) {
+      Err(e) => { result: { text: fallback_reply(), tools: [] }, err: str.concat("spawn failed: ", e) },
       Ok(out) => if out.exit_code != 0 {
-        str.join(["[proc exit=", int.to_str(out.exit_code), "] stderr=", out.stderr], "")
+        { result: { text: fallback_reply(), tools: [] }, err: str.join(["subprocess exit ", int.to_str(out.exit_code), ": ", out.stderr], "") }
       } else {
-        let raw := str.trim(out.stdout)
-        let stripped := match str.strip_suffix(raw, "null") {
-          Some(s) => str.trim(s),
-          None => raw,
-        }
-        if str.is_empty(stripped) {
-          str.concat("[empty llm response] stderr=", out.stderr)
-        } else {
-          stripped
-        }
+        { result: parse_loop_out(out.stdout, out.stderr), err: "" }
       },
     }
+    let result := outcome.result
+    let __terr := if str.is_empty(outcome.err) {
+      ()
+    } else {
+      trace.record(tdb, run_id, cfg.id, "error", outcome.err)
+    }
+    let answer := result.text
+    # Each tool the model actually executed becomes its own trace event so the
+    # server-side audit (and the web Activity tab) shows what the agent DID,
+    # not just what it said.
+    let __t_tools := list.fold(result.tools, (), fn (_acc :: Unit, tname :: Str) -> [sql, fs_write, time, random, crypto] Unit {
+      let __r := trace.record(tdb, run_id, cfg.id, "tool_call", tname)
+      ()
+    })
     let __t3 := trace.record(tdb, run_id, cfg.id, "llm_done", answer)
     { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [] }
   }

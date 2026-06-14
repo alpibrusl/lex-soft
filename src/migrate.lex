@@ -34,6 +34,16 @@ fn ddl_traces_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_traces_agent_ts ON traces(agent_id, ts)"
 }
 
+# Durable per-agent memory: facts the agent should remember across conversations
+# (preferences, assignments, lessons), recalled into the system prompt each turn.
+fn ddl_agent_memory() -> Str {
+  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL)"
+}
+
+fn ddl_agent_memory_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_agent_memory_agent ON agent_memory(agent_id, ts)"
+}
+
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, stmt, []) {
     Err(e) => Err(e.message),
@@ -61,6 +71,8 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
               Err(e) => Err(e),
               Ok(_) => {
                 let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+                let __mem := exec_ddl_tolerant(db, ddl_agent_memory())
+                let __memi := exec_ddl_tolerant(db, ddl_agent_memory_idx())
                 jobs.init_schema(db)
               },
             },
