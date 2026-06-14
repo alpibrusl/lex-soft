@@ -57,7 +57,20 @@ import "./outbox" as outbox
 # Each agent kind populates only the URLs its tools use; the rest are empty.
 type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, tms_url :: Str, charge_url :: Str, telemetry_url :: Str, logistics_url :: Str, tools :: List[t.Tool] }
 
-type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str }
+type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str, token :: Str }
+
+# A connection token (issued during the handshake) may be stored in a
+# relationship's contract_json as {"token":"..."}; outbound A2A calls to that
+# peer present it as a bearer token so the peer can authenticate the caller.
+fn contract_token(contract :: Str) -> Str {
+  match jv.parse(contract) {
+    Ok(j) => match jv.get_field(j, "token") {
+      Some(JStr(s)) => s,
+      _ => "",
+    },
+    Err(_) => "",
+  }
+}
 
 # Parsed result of the subprocess tool loop: the final assistant text plus
 # the names of every tool the model executed (in call order).
@@ -139,7 +152,7 @@ fn load_peers(db :: Db, agent_id :: Str) -> [sql, fs_read] List[PeerInfo] {
     Ok(rels) => list.fold(rels, [], fn (acc :: List[PeerInfo], r :: rel.Relationship) -> [sql, fs_read] List[PeerInfo] {
       match reg.find_by_id(db, r.to_agent) {
         Ok(Some(ref)) => if ref.status == "active" {
-          list.concat(acc, [{ id: ref.id, kind: ref.kind, name: ref.name, inbox_url: ref.inbox_url, role: r.role }])
+          list.concat(acc, [{ id: ref.id, kind: ref.kind, name: ref.name, inbox_url: ref.inbox_url, role: r.role, token: contract_token(r.contract_json) }])
         } else {
           acc
         },
@@ -176,7 +189,7 @@ fn load_peers_backend(b :: Backend, agent_id :: Str) -> [sql, fs_read, net] List
   match b {
     BackendLocal(db) => load_peers(db, agent_id),
     BackendRemote(rc) => list.map(pclient.peers(rc.client, agent_id, "coordination"), fn (p :: pclient.PeerInfo) -> PeerInfo {
-      { id: p.id, kind: p.kind, name: p.name, inbox_url: p.inbox_url, role: p.role }
+      { id: p.id, kind: p.kind, name: p.name, inbox_url: p.inbox_url, role: p.role, token: "" }
     }),
   }
 }
@@ -298,7 +311,7 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       # Resolved peer snapshot so the subprocess can rebuild the mesh tools
       # (find_peers/send_message) — enables outbound agent-to-agent in the loop.
       ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
-        JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role))])
+        JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
       }))),
       ("tms_url", JStr(cfg.tms_url)),
       ("charge_url", JStr(cfg.charge_url)),

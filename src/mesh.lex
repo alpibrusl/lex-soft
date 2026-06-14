@@ -27,6 +27,8 @@ import "std.list" as list
 
 import "std.str" as str
 
+import "std.map" as map
+
 fn pfield(pj :: jv.Json, key :: Str) -> Str {
   match jv.get_field(pj, key) {
     Some(JStr(sv)) => sv,
@@ -61,11 +63,11 @@ fn role_matches(roles :: List[Str], role :: Str) -> Bool {
   }
 }
 
-fn peer_url(peers :: List[jv.Json], to_id :: Str) -> Str {
+fn peer_field_for(peers :: List[jv.Json], to_id :: Str, field :: Str) -> Str {
   list.fold(peers, "", fn (acc :: Str, pj :: jv.Json) -> Str {
     if str.is_empty(acc) {
       if pfield(pj, "id") == to_id {
-        pfield(pj, "inbox_url")
+        pfield(pj, field)
       } else {
         acc
       }
@@ -73,6 +75,29 @@ fn peer_url(peers :: List[jv.Json], to_id :: Str) -> Str {
       acc
     }
   })
+}
+
+# POST an A2A tasks/send to `url`, attaching `Authorization: Bearer <token>` when
+# a connection token is present (so the peer can authenticate the caller).
+fn post_a2a(url :: Str, token :: Str, body :: Str) -> [net, io, proc] Result[jv.Json, e.Errors] {
+  let base := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: Some(60000) }
+  let with_ct := http.with_header(base, "Content-Type", "application/json")
+  let req := if str.is_empty(token) {
+    with_ct
+  } else {
+    http.with_header(with_ct, "Authorization", str.concat("Bearer ", token))
+  }
+  match http.send(req) {
+    Err(_) => Ok(JObj([("delivered", JBool(false))])),
+    Ok(r) => if r.status >= 400 {
+      Ok(JObj([("delivered", JBool(false)), ("status", JInt(r.status))]))
+    } else {
+      match bytes.to_str(r.body) {
+        Err(_) => Ok(JObj([("delivered", JBool(true))])),
+        Ok(txt) => Ok(JObj([("delivered", JBool(true)), ("reply_raw", JStr(txt))])),
+      }
+    },
+  }
 }
 
 # Build the mesh tools from a peers snapshot (List of {id,kind,name,inbox_url,role}
@@ -106,18 +131,13 @@ fn make_mesh_tools(agent_id :: Str, peers :: List[jv.Json]) -> List[t.Tool] {
     if str.is_empty(to_id) {
       Ok(JObj([("error", JStr("to_id is required"))]))
     } else {
-      let url := peer_url(peers, to_id)
+      let url := peer_field_for(peers, to_id, "inbox_url")
       if str.is_empty(url) {
         Ok(JObj([("error", JStr(str.concat("unknown or unauthorised peer: ", to_id)))]))
       } else {
+        let token := peer_field_for(peers, to_id, "token")
         let body_json := JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(topic)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(payload))])]))]))]))])
-        match http.post(url, bytes.from_str(jv.stringify(body_json)), "application/json") {
-          Err(_) => Ok(JObj([("delivered", JBool(false)), ("to", JStr(to_id))])),
-          Ok(r) => match bytes.to_str(r.body) {
-            Err(_) => Ok(JObj([("delivered", JBool(true)), ("to", JStr(to_id))])),
-            Ok(txt) => Ok(JObj([("delivered", JBool(true)), ("to", JStr(to_id)), ("reply_raw", JStr(txt))])),
-          },
-        }
+        post_a2a(url, token, jv.stringify(body_json))
       }
     }
   })]
