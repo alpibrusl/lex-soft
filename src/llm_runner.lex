@@ -43,6 +43,8 @@ import "lex-llm/src/agent" as ag
 
 import "lex-llm/src/delta" as d
 
+import "./mesh" as mesh
+
 type LoopOut = { text :: Str, tools :: List[Str] }
 
 # Entry point: read the request file, build the agent from a caller tool factory,
@@ -106,7 +108,15 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
     let txt := match jv.get_field(h, "text") { Some(JStr(s)) => s, _ => "" }
     if role == "agent" { AssistantMsg(txt, []) } else { UserMsg(txt) }
   })
-  let tools := tool_factory(j)
+  # Domain tools (app-supplied) + the agent-mesh tools (find_peers/send_message),
+  # rebuilt from the `peers` snapshot the parent serialized into the request — so
+  # outbound agent-to-agent works in the subprocess loop, including to external
+  # peers onboarded via POST /peers.
+  let peers := match jv.get_field(j, "peers") {
+    Some(JList(xs)) => xs,
+    _ => [],
+  }
+  let tools := list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers))
   # run_loop prepends SystemMsg(agent.goal) itself, so the goal carries the
   # system prompt and the conversation is just history + the new user turn.
   let conv := list.concat(hist_msgs, [UserMsg(user)])
