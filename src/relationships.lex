@@ -38,7 +38,10 @@ fn sq(s :: Str) -> Str {
 fn add(db :: Db, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str) -> [sql, fs_write, random, time] Result[Unit, Str] {
   let id := crypto.random_str_hex(16)
   let now := time.now_str()
-  let q := str.join(["INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) VALUES ('", id, "', '", sq(from_agent), "', '", sq(to_agent), "', '", sq(role), "', '", sq(contract_json), "', 1, '", now, "')"], "")
+  # Idempotent: only insert if no active edge for (from, to, role) already exists.
+  # Re-seeding on boot and peer re-registration used to append duplicate edges
+  # unboundedly (thousands of rows), which bloated the serialized peer snapshot.
+  let q := str.join(["INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) SELECT '", id, "', '", sq(from_agent), "', '", sq(to_agent), "', '", sq(role), "', '", sq(contract_json), "', 1, '", now, "' WHERE NOT EXISTS (SELECT 1 FROM relationships WHERE from_agent='", sq(from_agent), "' AND to_agent='", sq(to_agent), "' AND role='", sq(role), "' AND active=1)"], "")
   match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),

@@ -37,12 +37,16 @@ fn pfield(pj :: jv.Json, key :: Str) -> Str {
 }
 
 # Intent → acceptable relationship roles (empty = no filter / all peers).
+# Each intent maps to the roles that satisfy it. The intent name itself is
+# always included, so a peer registered with role == intent (e.g. a connector
+# with role "dispatch") is reachable via find_peers(intent). An empty list means
+# "any authorized peer" (see role_matches).
 fn intent_roles(intent :: Str) -> List[Str] {
   if intent == "charging" {
-    ["preferred_charger", "charger"]
+    ["preferred_charger", "charger", "charging"]
   } else {
     if intent == "dispatch" {
-      ["contracted", "freelance"]
+      ["contracted", "freelance", "dispatch"]
     } else {
       if intent == "reporting" {
         ["reporting"]

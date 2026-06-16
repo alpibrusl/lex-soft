@@ -36,12 +36,27 @@ fn ddl_traces_idx() -> Str {
 
 # Durable per-agent memory: facts the agent should remember across conversations
 # (preferences, assignments, lessons), recalled into the system prompt each turn.
+#
+# Columns beyond the original (id, agent_id, fact, ts) implement the 2026 agent-
+# memory patterns adapted to our lightweight (no-vector-DB) case:
+#   mkey       — structured key for keyed upsert (e.g. "home_depot"); '' = keyless
+#   mtype      — semantic | episodic | procedural (memory typing)
+#   importance — high | medium | low (recall ordering, no embeddings needed)
+#   scope      — composable scope (e.g. tenant/subject); 'global' = all contexts
+#   superseded — 1 when replaced by a newer keyed value (temporal supersession:
+#                keep history for "what was true when", recall only current)
+#   expires_at — optional ISO ts; expired facts drop out of recall (staleness)
+#   updated_at — last write time
 fn ddl_agent_memory() -> Str {
-  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL, mkey TEXT NOT NULL DEFAULT '', mtype TEXT NOT NULL DEFAULT 'semantic', importance TEXT NOT NULL DEFAULT 'medium', scope TEXT NOT NULL DEFAULT 'global', superseded INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
 }
 
 fn ddl_agent_memory_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_agent_memory_agent ON agent_memory(agent_id, ts)"
+}
+
+fn ddl_agent_memory_key_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(agent_id, scope, mkey, superseded)"
 }
 
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
@@ -73,6 +88,17 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
                 let __mem := exec_ddl_tolerant(db, ddl_agent_memory())
                 let __memi := exec_ddl_tolerant(db, ddl_agent_memory_idx())
+                # Migrate pre-existing agent_memory tables: add the typed/keyed/
+                # temporal columns (SQLite has no ADD COLUMN IF NOT EXISTS, so the
+                # ALTERs are run tolerantly — a duplicate-column error is ignored).
+                let __mc1 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mkey TEXT NOT NULL DEFAULT ''")
+                let __mc2 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mtype TEXT NOT NULL DEFAULT 'semantic'")
+                let __mc3 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium'")
+                let __mc4 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
+                let __mc5 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0")
+                let __mc6 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
+                let __mc7 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+                let __memk := exec_ddl_tolerant(db, ddl_agent_memory_key_idx())
                 jobs.init_schema(db)
               },
             },

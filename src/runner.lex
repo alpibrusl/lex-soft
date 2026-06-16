@@ -82,6 +82,44 @@ fn fallback_reply() -> Str {
   "I couldn't produce a response just now (the model returned nothing usable). Please try again in a moment."
 }
 
+# ── Peer hygiene ──────────────────────────────────────────────────────────────
+# The relationship table accumulates duplicate edges across re-seeds, so a single
+# agent can resolve hundreds of (mostly duplicate) peers. Dedup by id and cap, so
+# the serialized peer snapshot stays small (it rides in the spawn arg, 64 KiB max).
+fn list_has_str(xs :: List[Str], s :: Str) -> Bool {
+  list.fold(xs, false, fn (acc :: Bool, x :: Str) -> Bool { if acc { true } else { x == s } })
+}
+
+fn dedup_peers_go(xs :: List[PeerInfo], seen :: List[Str]) -> List[PeerInfo] {
+  if list.is_empty(xs) {
+    []
+  } else {
+    match list.head(xs) {
+      None => [],
+      Some(p) => if list_has_str(seen, p.id) {
+        dedup_peers_go(list.tail(xs), seen)
+      } else {
+        list.cons(p, dedup_peers_go(list.tail(xs), list.cons(p.id, seen)))
+      },
+    }
+  }
+}
+
+fn dedup_peers(xs :: List[PeerInfo]) -> List[PeerInfo] {
+  dedup_peers_go(xs, [])
+}
+
+fn take_peers(xs :: List[PeerInfo], n :: Int) -> List[PeerInfo] {
+  if n <= 0 or list.is_empty(xs) {
+    []
+  } else {
+    match list.head(xs) {
+      None => [],
+      Some(p) => list.cons(p, take_peers(list.tail(xs), n - 1)),
+    }
+  }
+}
+
 # Parse the subprocess stdout — a JSON object {"text":..,"tools":[..]} —
 # tolerating a trailing `null` printed by the `lex run` Unit return. Empty or
 # non-JSON output degrades to a graceful fallback message (keeping any tool
@@ -286,7 +324,10 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let history_json := trace.recent_messages_json(tdb, cfg.id, 8)
     let history := match jv.parse(history_json) { Ok(h) => h, Err(_) => JList([]) }
     let __t1 := trace.record(tdb, run_id, cfg.id, "received", text_in)
-    let peers := load_peers_backend(b, cfg.id)
+    # Dedup by id + cap: the relationship table accumulates duplicate edges on
+    # re-seed (a single agent can have hundreds), and serializing them all blew
+    # the proc.spawn 64 KiB per-arg limit. Distinct peers are few; cap as a guard.
+    let peers := take_peers(dedup_peers(load_peers_backend(b, cfg.id)), 50)
     let _platform := make_platform_tools_for_backend(b, peers, cfg.id)
     let sys_base := build_system_prompt(cfg, state)
     # Durable memory: recall the agent's remembered facts into the system prompt
@@ -318,6 +359,9 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       ("telemetry_url", JStr(cfg.telemetry_url)),
       ("logistics_url", JStr(cfg.logistics_url))
     ]))
+    # req_json is embedded in this shell command, which becomes a single argv
+    # entry to `sh -c`. proc.spawn caps each arg at 64 KiB, so history messages
+    # are truncated upstream (trace.recent_messages_json) to keep us well under it.
     let shell_cmd := str.join([
       "set -e\ncat > ", req_file, " <<'LEXEOF'\n",
       req_json, "\n",
