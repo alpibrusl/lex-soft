@@ -95,8 +95,6 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
   let system := get_str(j, "system", "")
   let user := get_str(j, "user", "")
   let agent_id := get_str(j, "agent_id", "")
-  # Prior-interaction context, passed as real conversation turns (more robust
-  # than stuffing transcript into the system prompt).
   let history := match jv.get_field(j, "history") {
     Some(JList(xs)) => xs,
     _ => [],
@@ -104,27 +102,31 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
   let provider := providers.select_provider(provider_name, api_url, api_key)
   let model_ref := prov.make_model_ref(provider.name, model)
   let hist_msgs := list.map(history, fn (h :: jv.Json) -> msg.Message {
-    let role := match jv.get_field(h, "role") { Some(JStr(s)) => s, _ => "user" }
-    let txt := match jv.get_field(h, "text") { Some(JStr(s)) => s, _ => "" }
-    if role == "agent" { AssistantMsg(txt, []) } else { UserMsg(txt) }
+    let role := match jv.get_field(h, "role") {
+      Some(JStr(s)) => s,
+      _ => "user",
+    }
+    let txt := match jv.get_field(h, "text") {
+      Some(JStr(s)) => s,
+      _ => "",
+    }
+    if role == "agent" {
+      AssistantMsg(txt, [])
+    } else {
+      UserMsg(txt)
+    }
   })
-  # Domain tools (app-supplied) + the agent-mesh tools (find_peers/send_message),
-  # rebuilt from the `peers` snapshot the parent serialized into the request — so
-  # outbound agent-to-agent works in the subprocess loop, including to external
-  # peers onboarded via POST /peers.
   let peers := match jv.get_field(j, "peers") {
     Some(JList(xs)) => xs,
     _ => [],
   }
   let tools := list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers))
-  # run_loop prepends SystemMsg(agent.goal) itself, so the goal carries the
-  # system prompt and the conversation is just history + the new user turn.
   let conv := list.concat(hist_msgs, [UserMsg(user)])
   let agent := ag.make_agent(agent_id, system, model_ref, provider, tools, ag.default_options())
   let steps := iter.to_list(ag.run_loop(agent, conv))
   let out := collect_loop(steps)
-  jv.stringify(JObj([
-    ("text", JStr(out.text)),
-    ("tools", JList(list.map(out.tools, fn (n :: Str) -> jv.Json { JStr(n) })))
-  ]))
+  jv.stringify(JObj([("text", JStr(out.text)), ("tools", JList(list.map(out.tools, fn (n :: Str) -> jv.Json {
+    JStr(n)
+  })))]))
 }
+
