@@ -47,7 +47,10 @@ fn recent_exchanges(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
   match sql.query(db, q, []) {
     Err(_) => "",
     Ok(rows) => str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "line") { Some(s) => s, None => "" }
+      match sql.get_str(r, "line") {
+        Some(s) => s,
+        None => "",
+      }
     }), "\n"),
   }
 }
@@ -56,13 +59,14 @@ fn recent_exchanges(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
 # oldest-first — fed to the LLM as real prior conversation turns. Prior empty/
 # error agent responses (start with '[') are filtered out.
 fn recent_messages_json(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
-  # data_json is truncated (substr 1..800) so a long past turn can't inflate the
-  # request beyond proc.spawn's 64 KiB per-arg limit (see runner.lex shell_cmd).
   let q := str.join(["SELECT j FROM (SELECT json_object('role', CASE event_kind WHEN 'received' THEN 'user' ELSE 'agent' END, 'text', substr(data_json, 1, 800)) AS j, ts FROM traces WHERE agent_id = '", sq(agent_id), "' AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
   match sql.query(db, q, []) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "j") { Some(s) => s, None => "" }
+      match sql.get_str(r, "j") {
+        Some(s) => s,
+        None => "",
+      }
     }), ","), "]")),
   }
 }
@@ -76,8 +80,6 @@ fn remember_fact(db :: Db, agent_id :: Str, fact :: Str) -> [sql, fs_write, time
   } else {
     let id := new_run_id()
     let now := time.now_str()
-    # Parameterised (sqlite `?`) so facts with semicolons/quotes can't break or
-    # split the statement — the user-supplied `fact` is data, not SQL.
     let q := "INSERT INTO agent_memory (id, agent_id, fact, ts, updated_at) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM agent_memory WHERE agent_id = ? AND fact = ? AND superseded = 0)"
     let __lex_discard_m := sql.exec(db, q, [PStr(id), PStr(agent_id), PStr(fact), PStr(now), PStr(now), PStr(agent_id), PStr(fact)])
     ()
@@ -85,11 +87,19 @@ fn remember_fact(db :: Db, agent_id :: Str, fact :: Str) -> [sql, fs_write, time
 }
 
 fn norm_type(t :: Str) -> Str {
-  if t == "episodic" or t == "procedural" or t == "semantic" { t } else { "semantic" }
+  if t == "episodic" or t == "procedural" or t == "semantic" {
+    t
+  } else {
+    "semantic"
+  }
 }
 
 fn norm_importance(i :: Str) -> Str {
-  if i == "high" or i == "low" or i == "medium" { i } else { "medium" }
+  if i == "high" or i == "low" or i == "medium" {
+    i
+  } else {
+    "medium"
+  }
 }
 
 # Current (non-superseded) value stored under a key, or "" if none.
@@ -99,7 +109,10 @@ fn current_value(db :: Db, agent_id :: Str, scope :: Str, mkey :: Str) -> [sql] 
     Err(_) => "",
     Ok(rows) => match list.head(rows) {
       None => "",
-      Some(r) => match sql.get_str(r, "fact") { Some(s) => s, None => "" },
+      Some(r) => match sql.get_str(r, "fact") {
+        Some(s) => s,
+        None => "",
+      },
     },
   }
 }
@@ -114,11 +127,14 @@ fn remember_kv(db :: Db, agent_id :: Str, scope0 :: Str, mkey :: Str, fact :: St
   if str.is_empty(str.trim(fact)) {
     ()
   } else {
-    let scope := if str.is_empty(scope0) { "global" } else { scope0 }
+    let scope := if str.is_empty(scope0) {
+      "global"
+    } else {
+      scope0
+    }
     let mtype := norm_type(mtype0)
     let importance := norm_importance(importance0)
     if str.is_empty(str.trim(mkey)) {
-      # Keyless: keep the deduped-append behavior but carry type/importance.
       let id := new_run_id()
       let now := time.now_str()
       let q := "INSERT INTO agent_memory (id, agent_id, fact, ts, mtype, importance, scope, expires_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM agent_memory WHERE agent_id = ? AND fact = ? AND superseded = 0)"
@@ -149,7 +165,10 @@ fn recall_facts_text(db :: Db, agent_id :: Str, n :: Int) -> [sql, time] Str {
   match sql.query(db, q, [PStr(agent_id), PStr(now), PInt(n)]) {
     Err(_) => "",
     Ok(rows) => str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "line") { Some(s) => str.concat("- ", s), None => "" }
+      match sql.get_str(r, "line") {
+        Some(s) => str.concat("- ", s),
+        None => "",
+      }
     }), "\n"),
   }
 }
@@ -161,7 +180,10 @@ fn recall_memory_json(db :: Db, agent_id :: Str, n :: Int) -> [sql, time] Str {
   match sql.query(db, q, [PStr(agent_id), PStr(now), PInt(n)]) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "j") { Some(s) => s, None => "" }
+      match sql.get_str(r, "j") {
+        Some(s) => s,
+        None => "",
+      }
     }), ","), "]")),
   }
 }
@@ -174,7 +196,10 @@ fn recent_by_agent(db :: Db, agent_id :: Str, lim :: Int) -> [sql] Str {
   match sql.query(db, q, []) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "j") { Some(s) => s, None => "" }
+      match sql.get_str(r, "j") {
+        Some(s) => s,
+        None => "",
+      }
     }), ","), "]")),
   }
 }

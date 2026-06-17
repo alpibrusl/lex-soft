@@ -87,7 +87,13 @@ fn fallback_reply() -> Str {
 # agent can resolve hundreds of (mostly duplicate) peers. Dedup by id and cap, so
 # the serialized peer snapshot stays small (it rides in the spawn arg, 64 KiB max).
 fn list_has_str(xs :: List[Str], s :: Str) -> Bool {
-  list.fold(xs, false, fn (acc :: Bool, x :: Str) -> Bool { if acc { true } else { x == s } })
+  list.fold(xs, false, fn (acc :: Bool, x :: Str) -> Bool {
+    if acc {
+      true
+    } else {
+      x == s
+    }
+  })
 }
 
 fn dedup_peers_go(xs :: List[PeerInfo], seen :: List[Str]) -> List[PeerInfo] {
@@ -319,19 +325,15 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let run_id := trace.new_run_id()
     let state := load_state_backend(b, cfg.id)
     let text_in := first_text(m)
-    # Prior-interaction context as real conversation turns, loaded BEFORE
-    # recording the current turn so it isn't echoed back.
     let history_json := trace.recent_messages_json(tdb, cfg.id, 8)
-    let history := match jv.parse(history_json) { Ok(h) => h, Err(_) => JList([]) }
+    let history := match jv.parse(history_json) {
+      Ok(h) => h,
+      Err(_) => JList([]),
+    }
     let __t1 := trace.record(tdb, run_id, cfg.id, "received", text_in)
-    # Dedup by id + cap: the relationship table accumulates duplicate edges on
-    # re-seed (a single agent can have hundreds), and serializing them all blew
-    # the proc.spawn 64 KiB per-arg limit. Distinct peers are few; cap as a guard.
     let peers := take_peers(dedup_peers(load_peers_backend(b, cfg.id)), 50)
     let _platform := make_platform_tools_for_backend(b, peers, cfg.id)
     let sys_base := build_system_prompt(cfg, state)
-    # Durable memory: recall the agent's remembered facts into the system prompt
-    # so they persist across conversations (distinct from the recent-turn history).
     let mem := trace.recall_facts_text(tdb, cfg.id, 8)
     let sys := if str.is_empty(mem) {
       sys_base
@@ -339,40 +341,11 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       str.concat(sys_base, str.concat("\n\nDurable memory (facts you have remembered, honor them):\n", mem))
     }
     let req_file := str.concat("/tmp/llm_", str.concat(cfg.id, ".json"))
-    let req_json := jv.stringify(JObj([
-      ("provider", JStr(cfg.provider_name)),
-      ("api_url", JStr(cfg.provider_url)),
-      ("api_key", JStr(cfg.provider_key)),
-      ("model", JStr(cfg.model_name)),
-      ("system", JStr(sys)),
-      ("user", JStr(text_in)),
-      ("history", history),
-      ("kind", JStr(cfg.kind)),
-      ("agent_id", JStr(cfg.id)),
-      # Resolved peer snapshot so the subprocess can rebuild the mesh tools
-      # (find_peers/send_message) — enables outbound agent-to-agent in the loop.
-      ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
-        JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
-      }))),
-      ("tms_url", JStr(cfg.tms_url)),
-      ("charge_url", JStr(cfg.charge_url)),
-      ("telemetry_url", JStr(cfg.telemetry_url)),
-      ("logistics_url", JStr(cfg.logistics_url))
-    ]))
-    # req_json is embedded in this shell command, which becomes a single argv
-    # entry to `sh -c`. proc.spawn caps each arg at 64 KiB, so history messages
-    # are truncated upstream (trace.recent_messages_json) to keep us well under it.
-    let shell_cmd := str.join([
-      "set -e\ncat > ", req_file, " <<'LEXEOF'\n",
-      req_json, "\n",
-      "LEXEOF\n",
-      "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"
-    ], "")
+    let req_json := jv.stringify(JObj([("provider", JStr(cfg.provider_name)), ("api_url", JStr(cfg.provider_url)), ("api_key", JStr(cfg.provider_key)), ("model", JStr(cfg.model_name)), ("system", JStr(sys)), ("user", JStr(text_in)), ("history", history), ("kind", JStr(cfg.kind)), ("agent_id", JStr(cfg.id)), ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
+      JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
+    }))), ("tms_url", JStr(cfg.tms_url)), ("charge_url", JStr(cfg.charge_url)), ("telemetry_url", JStr(cfg.telemetry_url)), ("logistics_url", JStr(cfg.logistics_url))]))
+    let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
-    # A subprocess crash (e.g. a runtime panic on an unexpected Gemini response
-    # shape) or spawn failure must NOT surface as a raw error to the operator:
-    # show a graceful fallback, and record the raw detail to the audit as an
-    # `error` event for debugging.
     let outcome := match proc.spawn("sh", ["-c", shell_cmd]) {
       Err(e) => { result: { text: fallback_reply(), tools: [] }, err: str.concat("spawn failed: ", e) },
       Ok(out) => if out.exit_code != 0 {
@@ -388,9 +361,6 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       trace.record(tdb, run_id, cfg.id, "error", outcome.err)
     }
     let answer := result.text
-    # Each tool the model actually executed becomes its own trace event so the
-    # server-side audit (and the web Activity tab) shows what the agent DID,
-    # not just what it said.
     let __t_tools := list.fold(result.tools, (), fn (_acc :: Unit, tname :: Str) -> [sql, fs_write, time, random, crypto] Unit {
       let __r := trace.record(tdb, run_id, cfg.id, "tool_call", tname)
       ()

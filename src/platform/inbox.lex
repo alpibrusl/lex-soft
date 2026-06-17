@@ -34,22 +34,13 @@ fn pull_queue(agent_id :: Str) -> Str {
 
 # Build an A2A JSON-RPC tasks/send message from a platform envelope.
 fn build_a2a_msg(from :: Str, topic :: Str, body :: Str) -> Str {
-  let payload := if str.is_empty(body) { "{}" } else { body }
+  let payload := if str.is_empty(body) {
+    "{}"
+  } else {
+    body
+  }
   let text := str.join(["From: ", from, "\nTopic: ", topic, "\nPayload: ", payload], "")
-  jv.stringify(JObj([
-    ("jsonrpc", JStr("2.0")),
-    ("id", JStr("1")),
-    ("method", JStr("tasks/send")),
-    ("params", JObj([
-      ("id", JStr(str.concat("msg-", from))),
-      ("contextId", JStr(str.concat("ctx-", from))),
-      ("skill", JStr("handle")),
-      ("message", JObj([
-        ("role", JStr("user")),
-        ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(text))])]))
-      ]))
-    ]))
-  ]))
+  jv.stringify(JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", from))), ("contextId", JStr(str.concat("ctx-", from))), ("skill", JStr("handle")), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(text))])]))]))]))]))
 }
 
 # Route an incoming message to the correct delivery path for `to_agent_id`.

@@ -88,9 +88,6 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
                 let __mem := exec_ddl_tolerant(db, ddl_agent_memory())
                 let __memi := exec_ddl_tolerant(db, ddl_agent_memory_idx())
-                # Migrate pre-existing agent_memory tables: add the typed/keyed/
-                # temporal columns (SQLite has no ADD COLUMN IF NOT EXISTS, so the
-                # ALTERs are run tolerantly — a duplicate-column error is ignored).
                 let __mc1 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mkey TEXT NOT NULL DEFAULT ''")
                 let __mc2 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mtype TEXT NOT NULL DEFAULT 'semantic'")
                 let __mc3 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium'")
