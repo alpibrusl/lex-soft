@@ -5,12 +5,12 @@ description = "LLM-agent platform — registry, relationship graph, resolver, ru
 license     = "EUPL-1.2"
 
 [dependencies]
-lex-schema = { path = "../../generic/lex-schema" }
-lex-web    = { path = "../../generic/lex-web" }
-lex-log    = { path = "../../generic/lex-log" }
-lex-cli    = { path = "../../generic/lex-cli" }
-lex-jobs   = { path = "../../generic/lex-jobs" }
-lex-spec   = { path = "../lex-spec" }
-lex-llm    = { path = "../lex-llm" }
-lex-agent  = { path = "../lex-agent" }
-lex-mcp    = { path = "../lex-mcp" }
+lex-schema = { git = "https://github.com/alpibrusl/lex-schema" }
+lex-web    = { git = "https://github.com/alpibrusl/lex-web" }
+lex-log    = { git = "https://github.com/alpibrusl/lex-log" }
+lex-cli    = { git = "https://github.com/alpibrusl/lex-cli" }
+lex-jobs   = { git = "https://github.com/alpibrusl/lex-jobs" }
+lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
+lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
+lex-agent  = { git = "https://github.com/alpibrusl/lex-agent" }
+lex-mcp    = { git = "https://github.com/alpibrusl/lex-mcp" }

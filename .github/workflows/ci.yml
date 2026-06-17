@@ -21,35 +21,6 @@ jobs:
           echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
           "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu/lex" --version
 
-      # Path deps (lex-schema, lex-web, lex-llm, lex-agent, …) live in sibling
-      # repos, not in this checkout. Recursively clone each path dep (by basename,
-      # from alpibrusl) into the exact relative path its lex.toml expects, so
-      # `lex pkg install` and `lex check` resolve. All deps are public; a cycle
-      # guard handles self-references (e.g. lex-trail path=".").
-      - name: Fetch lex path dependencies
-        run: |
-          set -euo pipefail
-          SEEN=""
-          fetch() {
-            local dir="$1"
-            case " $SEEN " in *" $dir "*) return 0 ;; esac
-            SEEN="$SEEN $dir"
-            [ -f "$dir/lex.toml" ] || return 0
-            while IFS= read -r p; do
-              [ -z "$p" ] && continue
-              [ "$p" = "." ] && continue
-              local target name
-              target="$(cd "$dir" && realpath -m "$p")"
-              name="$(basename "$p")"
-              if [ ! -d "$target" ]; then
-                echo "fetch $name -> $target"
-                git clone --depth 1 "https://github.com/alpibrusl/$name.git" "$target"
-              fi
-              fetch "$target"
-            done < <(grep -oE 'path = "[^"]+"' "$dir/lex.toml" | sed -E 's/.*"([^"]+)".*/\1/')
-          }
-          fetch "$GITHUB_WORKSPACE"
-
       - name: Install package dependencies
         run: lex pkg install
 
