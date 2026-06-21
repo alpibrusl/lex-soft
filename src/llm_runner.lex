@@ -41,11 +41,9 @@ import "lex-llm/src/tool" as t
 
 import "lex-llm/src/agent" as ag
 
-import "lex-llm/src/delta" as d
+import "lex-agent-llm/src/bridge" as bridge
 
 import "./mesh" as mesh
-
-type LoopOut = { text :: Str, tools :: List[Str] }
 
 # Entry point: read the request file, build the agent from a caller tool factory,
 # run the loop, and print the {text, tools} result. `tool_factory` receives the
@@ -74,17 +72,6 @@ fn get_str(j :: jv.Json, key :: Str, default :: Str) -> Str {
     Some(JStr(s)) => s,
     _ => default,
   }
-}
-
-# Fold the step stream into final text + executed tool names (in order).
-fn collect_loop(steps :: List[d.Step]) -> LoopOut {
-  list.fold(steps, { text: "", tools: [] }, fn (acc :: LoopOut, st :: d.Step) -> LoopOut {
-    match st {
-      StepDone(m) => { text: msg.content(m), tools: acc.tools },
-      StepToolExec(name, _id) => { text: acc.text, tools: list.concat(acc.tools, [name]) },
-      _ => acc,
-    }
-  })
 }
 
 fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, proc] Str {
@@ -124,7 +111,7 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
   let conv := list.concat(hist_msgs, [UserMsg(user)])
   let agent := ag.make_agent(agent_id, system, model_ref, provider, tools, ag.default_options())
   let steps := iter.to_list(ag.run_loop(agent, conv))
-  let out := collect_loop(steps)
+  let out := bridge.collect(steps)
   jv.stringify(JObj([("text", JStr(out.text)), ("tools", JList(list.map(out.tools, fn (n :: Str) -> jv.Json {
     JStr(n)
   })))]))
