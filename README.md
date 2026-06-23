@@ -143,4 +143,4 @@ EUPL-1.2 (matches the rest of the lex ecosystem).
 
 ---
 
-Built under the principles of [Trust Without Comprehension](https://alpibru.com/manifesto).
+Built under the principles of [Trust Without Comprehension](https://lexlang.org/manifesto).
