@@ -24,7 +24,7 @@ import "std.http" as http
 
 import "std.bytes" as bytes
 
-import "std.proc" as proc
+import "std.process" as process
 
 import "lex-schema/json_value" as jv
 
@@ -346,7 +346,7 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     }))), ("tms_url", JStr(cfg.tms_url)), ("charge_url", JStr(cfg.charge_url)), ("telemetry_url", JStr(cfg.telemetry_url)), ("logistics_url", JStr(cfg.logistics_url))]))
     let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
-    let outcome := match proc.spawn("sh", ["-c", shell_cmd]) {
+    let outcome := match process.run("sh", ["-c", shell_cmd]) {
       Err(e) => { result: { text: fallback_reply(), tools: [] }, err: str.concat("spawn failed: ", e) },
       Ok(out) => if out.exit_code != 0 {
         { result: { text: fallback_reply(), tools: [] }, err: str.join(["subprocess exit ", int.to_str(out.exit_code), ": ", out.stderr], "") }
