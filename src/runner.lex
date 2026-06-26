@@ -42,6 +42,8 @@ import "./state_store" as state_store
 
 import "./trace" as trace
 
+import "./settlement" as settlement
+
 import "./relationships" as rel
 
 import "./registry" as reg
@@ -366,7 +368,9 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       ()
     })
     let __t3 := trace.record(tdb, run_id, cfg.id, "llm_done", answer)
-    { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [] }
+    let trail_id := settlement.record_run(settlement.trail_on(tdb), cfg.id, "handle", text_in, answer, result.tools)
+    let trail_artifact := { name: "trail", index: 0, parts: [DataPart(JObj([("trail_id", JStr(trail_id)), ("verify_url", JStr(str.concat("/trails/", trail_id)))]))] }
+    { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [trail_artifact] }
   }
 }
 

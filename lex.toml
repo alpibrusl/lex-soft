@@ -14,5 +14,6 @@ lex-spec   = { git = "https://github.com/alpibrusl/lex-spec" }
 lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
 lex-agent  = { git = "https://github.com/alpibrusl/lex-agent" }
 lex-crypto = { git = "https://github.com/alpibrusl/lex-crypto" }
+lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
 lex-mcp    = { git = "https://github.com/alpibrusl/lex-mcp" }
 lex-agent-llm = { git = "https://github.com/alpibrusl/lex-agent-llm" }
