@@ -54,6 +54,8 @@ import "./trace" as trace
 
 import "./matchmaking" as mm
 
+import "./partner_auth" as pa
+
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
 #   base         public base URL of this deployment
@@ -201,7 +203,11 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       let authed := if str.is_empty(tok) {
         not cfg.require_token
       } else {
-        verify_conn_token(cfg.secret, tok)
+        if verify_conn_token(cfg.secret, tok) {
+          true
+        } else {
+          pa.verify(db, tok)
+        }
       }
       if authed {
         resp.json(srv.dispatch_request(agent_def, c.body))
@@ -246,7 +252,7 @@ type DirRow = { org :: Str, catalog_url :: Str, capabilities :: Str, public_key 
 fn init_directory(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, "CREATE TABLE IF NOT EXISTS org_directory (org TEXT PRIMARY KEY, catalog_url TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', public_key TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')", []) {
     Err(e) => Err(e.message),
-    Ok(_) => Ok(()),
+    Ok(_) => pa.init(db),
   }
 }
 
@@ -369,6 +375,12 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
         let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
           register_peer_json(db, aj, link_from, role, contract)
         })
+        let partner_key := jstr(j, "public_key")
+        let __pk := if str.is_empty(partner_key) {
+          Ok(())
+        } else {
+          pa.cache_key(db, req_org, partner_key)
+        }
         let issued := issue_conn_token(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now())
         resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
           agentref_json(a, base)
