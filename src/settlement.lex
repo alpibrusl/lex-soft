@@ -1,0 +1,78 @@
+# src/settlement.lex — the trail as the unit of settlement (#19).
+#
+# An A2A `tasks/send` returns natural-language text — no verifiable artifact of
+# WHAT the agent did, so you can't settle a payment or SLA against a proven
+# outcome. This records every task run as a hash-chained `lex-trail` and exposes
+# its content-addressed id, so a requester can replay + verify it (#20) and pay
+# against it (#21).
+#
+# A run records a parent-linked chain: received → llm_step → completed. The
+# `trail_id` is the TIP event's content hash (sha256 over kind|parent|payload|ts,
+# from lex-trail/event). Fetching walks the chain up from the tip; re-hashing
+# every event (export.all_valid) reproduces the ids, so any mutation is detected.
+
+import "std.str" as str
+
+import "std.list" as list
+
+import "lex-schema/json_value" as jv
+
+import "lex-trail/log" as tlog
+
+import "lex-trail/replay" as replay
+
+import "lex-trail/export" as txport
+
+import "lex-trail/kinds" as kinds
+
+# Wrap an existing db as a trail log (idempotent schema init).
+fn trail_on(db :: Db) -> [sql] tlog.Log {
+  let __i := tlog.init_schema(db)
+  { db: db }
+}
+
+# Record a run's hash-chained trail; returns the content-addressed trail_id
+# (the tip event's id), or "" if the trail could not be written.
+fn record_run(log :: tlog.Log, agent :: Str, skill :: Str, input :: Str, answer :: Str, tools :: List[Str]) -> [sql, time] Str {
+  let recv := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("input", JStr(input))]))
+  match tlog.append(log, kinds.a2a_task_received(), None, recv) {
+    Err(_) => "",
+    Ok(e1) => {
+      let step := jv.stringify(JObj([("agent", JStr(agent)), ("tool_calls", JList(list.map(tools, fn (t :: Str) -> jv.Json {
+        JStr(t)
+      })))]))
+      match tlog.append(log, kinds.llm_step(), Some(e1.id), step) {
+        Err(_) => "",
+        Ok(e2) => {
+          let done := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("result", JStr(answer))]))
+          match tlog.append(log, kinds.cap_completed(), Some(e2.id), done) {
+            Err(_) => "",
+            Ok(e3) => e3.id,
+          }
+        },
+      }
+    },
+  }
+}
+
+# Verify a trail: walk the chain from its tip id and re-hash every event.
+# Empty (unknown id) or any tampered event → false.
+fn verify(log :: tlog.Log, trail_id :: Str) -> [sql] Bool {
+  let evts := replay.walk_chain(log, trail_id)
+  if list.is_empty(evts) {
+    false
+  } else {
+    txport.all_valid(evts)
+  }
+}
+
+# A fetch report: the trail's id, validity, and its events.
+fn report_json(log :: tlog.Log, trail_id :: Str) -> [sql] Str {
+  let evts := replay.walk_chain(log, trail_id)
+  let events := match jv.parse(txport.events_json(evts)) {
+    Ok(j) => j,
+    Err(_) => JList([]),
+  }
+  jv.stringify(JObj([("trail_id", JStr(trail_id)), ("valid", JBool(txport.all_valid(evts))), ("events", events)]))
+}
+

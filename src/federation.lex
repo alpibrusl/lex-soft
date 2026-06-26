@@ -56,6 +56,8 @@ import "./matchmaking" as mm
 
 import "./partner_auth" as pa
 
+import "./settlement" as settlement
+
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
 #   base         public base URL of this deployment
@@ -435,7 +437,7 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
       dir_to_json(rr)
     })))])))
   })
-  router.route_effectful(with_dir_find, "POST", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_find_post := router.route_effectful(with_dir_find, "POST", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -450,6 +452,17 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
           })))])))
         }
       },
+    }
+  })
+  router.route_effectful(with_find_post, "GET", "/trails/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    let id := match ctx.path_param(c, "id") {
+      Some(s) => s,
+      None => "",
+    }
+    if str.is_empty(id) {
+      resp.bad_request("{\"error\":\"trail id is required\"}")
+    } else {
+      resp.json(settlement.report_json(settlement.trail_on(db), id))
     }
   })
 }
