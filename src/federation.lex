@@ -52,6 +52,8 @@ import "./relationships" as rel
 
 import "./trace" as trace
 
+import "./matchmaking" as mm
+
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
 #   base         public base URL of this deployment
@@ -271,6 +273,39 @@ fn dir_list_json(rows :: List[DirRow]) -> Str {
   })))]))
 }
 
+# ── Typed capability matchmaking (see matchmaking.lex) ────────────────────────
+# Project directory rows into the (org, parsed-capabilities) entries the
+# matchmaker consumes, and look an org's row back up to enrich a match.
+fn dir_entries(rows :: List[DirRow]) -> List[mm.OrgCaps] {
+  list.map(rows, fn (r :: DirRow) -> mm.OrgCaps {
+    let caps := match jv.parse(r.capabilities) {
+      Ok(j) => j,
+      Err(_) => JList([]),
+    }
+    { org: r.org, caps: caps }
+  })
+}
+
+fn find_row(rows :: List[DirRow], org :: Str) -> Option[DirRow] {
+  list.fold(rows, None, fn (acc :: Option[DirRow], r :: DirRow) -> Option[DirRow] {
+    match acc {
+      Some(_) => acc,
+      None => if r.org == org {
+        Some(r)
+      } else {
+        None
+      },
+    }
+  })
+}
+
+fn match_detail_json(rows :: List[DirRow], m :: mm.Match) -> jv.Json {
+  match find_row(rows, m.org) {
+    Some(r) => JObj([("org", JStr(m.org)), ("capability", JStr(m.capability)), ("score", JInt(m.score)), ("catalog_url", JStr(r.catalog_url)), ("public_key", JStr(r.public_key))]),
+    None => JObj([("org", JStr(m.org)), ("capability", JStr(m.capability)), ("score", JInt(m.score))]),
+  }
+}
+
 # ── Federation routes ─────────────────────────────────────────────────────────
 # Mount the full federation surface onto an existing router. Call once, after a
 # domain pack has mounted its agents with `mount_agent`.
@@ -353,9 +388,10 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
           if str.is_empty(catalog_url) {
             resp.bad_request("{\"error\":\"catalog_url is required\"}")
           } else {
-            let caps_json := jv.stringify(JList(list.map(json_str_list(j, "capabilities"), fn (cc :: Str) -> jv.Json {
-              JStr(cc)
-            })))
+            let caps_json := match jv.get_field(j, "capabilities") {
+              Some(JList(items)) => jv.stringify(JList(items)),
+              _ => "[]",
+            }
             let now := time.now_str()
             let q := str.join(["INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES ('", sq(d_org), "', '", sq(catalog_url), "', '", sq(caps_json), "', '", sq(jstr(j, "public_key")), "', '", now, "') ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"], "")
             match sql.exec(db, q, []) {
@@ -370,16 +406,39 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
   let with_dir_list := router.route_effectful(with_dir_post, "GET", "/directory", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     resp.json(dir_list_json(dir_query(db, "")))
   })
-  router.route_effectful(with_dir_list, "GET", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_find := router.route_effectful(with_dir_list, "GET", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     let cap := ctx.query_param_or(c, "capability", "")
-    let where_sql := if str.is_empty(cap) {
-      ""
+    let rows := dir_query(db, "")
+    let matched_rows := if str.is_empty(cap) {
+      rows
     } else {
-      str.join(["WHERE capabilities LIKE '%\"", sq(cap), "\"%'"], "")
+      list.fold(mm.find(dir_entries(rows), mm.exact_query(cap)), [], fn (acc :: List[DirRow], m :: mm.Match) -> List[DirRow] {
+        match find_row(rows, m.org) {
+          Some(r) => list.concat(acc, [r]),
+          None => acc,
+        }
+      })
     }
-    resp.json(str.concat("{\"capability\":", str.concat(jv.stringify(JStr(cap)), str.concat(",\"orgs\":", str.concat(jv.stringify(JList(list.map(dir_query(db, where_sql), fn (rr :: DirRow) -> jv.Json {
+    resp.json(jv.stringify(JObj([("capability", JStr(cap)), ("orgs", JList(list.map(matched_rows, fn (rr :: DirRow) -> jv.Json {
       dir_to_json(rr)
-    }))), "}")))))
+    })))])))
+  })
+  router.route_effectful(with_dir_find, "POST", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match jv.parse(c.body) {
+      Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
+      Ok(j) => {
+        let q := mm.parse_query(j)
+        if str.is_empty(q.capability) {
+          resp.bad_request("{\"error\":\"capability is required\"}")
+        } else {
+          let rows := dir_query(db, "")
+          let matches := mm.find(dir_entries(rows), q)
+          resp.json(jv.stringify(JObj([("capability", JStr(q.capability)), ("matches", JList(list.map(matches, fn (m :: mm.Match) -> jv.Json {
+            match_detail_json(rows, m)
+          })))])))
+        }
+      },
+    }
   })
 }
 
