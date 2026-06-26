@@ -41,4 +41,4 @@ jobs:
         run: lex fmt --check src/ tests/
 
       - name: Run tests
-        run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent tests/
+        run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc tests/
