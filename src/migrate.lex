@@ -11,7 +11,11 @@ import "std.sql" as sql
 import "lex-jobs/src/jobs" as jobs
 
 fn ddl_agents() -> Str {
-  "CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, inbox_url TEXT NOT NULL, capabilities_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', registered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, inbox_url TEXT NOT NULL, capabilities_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'active', tenant TEXT NOT NULL DEFAULT 'default', registered_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)"
+}
+
+fn ddl_agents_tenant_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_agents_tenant ON agents(tenant, kind)"
 }
 
 fn ddl_relationships() -> Str {
@@ -85,6 +89,8 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
             Ok(_) => match exec_ddl(db, ddl_traces_idx()) {
               Err(e) => Err(e),
               Ok(_) => {
+                let __tenant := exec_ddl_tolerant(db, "ALTER TABLE agents ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'")
+                let __tenant_idx := exec_ddl_tolerant(db, ddl_agents_tenant_idx())
                 let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
                 let __mem := exec_ddl_tolerant(db, ddl_agent_memory())
                 let __memi := exec_ddl_tolerant(db, ddl_agent_memory_idx())

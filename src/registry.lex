@@ -13,9 +13,9 @@ import "std.list" as list
 
 import "lex-schema/json_value" as jv
 
-type AgentRef = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str], status :: Str }
+type AgentRef = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str], status :: Str, tenant :: Str }
 
-type AgentRow = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities_json :: Str, status :: Str }
+type AgentRow = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities_json :: Str, status :: Str, tenant :: Str }
 
 fn parse_agent_row(r :: AgentRow) -> AgentRef {
   let cap_list := match jv.parse(r.capabilities_json) {
@@ -27,19 +27,31 @@ fn parse_agent_row(r :: AgentRow) -> AgentRef {
     }),
     _ => [],
   }
-  { id: r.id, kind: r.kind, name: r.name, inbox_url: r.inbox_url, capabilities: cap_list, status: r.status }
+  { id: r.id, kind: r.kind, name: r.name, inbox_url: r.inbox_url, capabilities: cap_list, status: r.status, tenant: r.tenant }
+}
+
+# Column list shared by every SELECT — keeps tenant in lock-step with AgentRow.
+fn cols() -> Str {
+  "id, kind, name, inbox_url, capabilities_json, status, tenant"
 }
 
 fn sq(s :: Str) -> Str {
   str.replace(s, "'", "''")
 }
 
+# Register into the default tenant (back-compatible single-tenant API).
 fn register(db :: Db, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
+  register_in(db, "default", id, kind, name, inbox_url, capabilities)
+}
+
+# Register an agent scoped to a tenant. The tenant is the multi-tenant boundary:
+# discovery and visibility are filtered by it (see list_by_tenant / find_by_kind_in).
+fn register_in(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
   let caps_json := jv.stringify(JList(list.map(capabilities, fn (c :: Str) -> jv.Json {
     JStr(c)
   })))
-  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'active', '", now, "', '", now, "') ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', last_seen_at=excluded.last_seen_at"], "")
+  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'active', '", sq(tenant), "', '", now, "', '", now, "') ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', tenant=excluded.tenant, last_seen_at=excluded.last_seen_at"], "")
   match sql.exec(db, q, []) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
@@ -65,7 +77,7 @@ fn set_status(db :: Db, id :: Str, status :: Str) -> [sql, fs_write, time] Resul
 }
 
 fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], Str] {
-  let q := str.join(["SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE id='", sq(id), "'"], "")
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE id='", sq(id), "'"], "")
   let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
@@ -77,7 +89,7 @@ fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], St
 }
 
 fn find_by_kind(db :: Db, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := str.join(["SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents WHERE kind='", sq(kind), "' AND status='active'"], "")
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE kind='", sq(kind), "' AND status='active'"], "")
   let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
@@ -88,7 +100,33 @@ fn find_by_kind(db :: Db, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], 
 }
 
 fn list_all(db :: Db) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := "SELECT id, kind, name, inbox_url, capabilities_json, status FROM agents ORDER BY kind, name"
+  let q := str.join(["SELECT ", cols(), " FROM agents ORDER BY kind, name"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  match rows {
+    Err(e) => Err(e.message),
+    Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {
+      parse_agent_row(r)
+    })),
+  }
+}
+
+# ── Tenant-scoped discovery (the multi-tenant boundary, #26) ──────────────────
+# An agent in tenant A must not see tenant B's registry. These return ONLY the
+# rows owned by the given tenant; `find_by_id` is unscoped on purpose (it is a
+# direct-key lookup used after a tenant check), the list views are the boundary.
+fn list_by_tenant(db :: Db, tenant :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant='", sq(tenant), "' ORDER BY kind, name"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  match rows {
+    Err(e) => Err(e.message),
+    Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {
+      parse_agent_row(r)
+    })),
+  }
+}
+
+fn find_by_kind_in(db :: Db, tenant :: Str, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant='", sq(tenant), "' AND kind='", sq(kind), "' AND status='active'"], "")
   let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
