@@ -21,6 +21,8 @@ import "std.list" as list
 
 import "std.crypto" as crypto
 
+import "lex-schema/json_value" as jv
+
 import "./registry" as reg
 
 type Relationship = { id :: Str, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str }
@@ -61,6 +63,60 @@ fn peers_of(db :: Db, from_agent :: Str) -> [sql, fs_read] Result[List[Relations
     Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
       parse_rel_row(r)
     })),
+  }
+}
+
+# ── Relationship-gated invocation (#26) ───────────────────────────────────────
+# A peer may only invoke a capability its relationship contract grants. The gate
+# is the directed edge `caller -> target`: if no active edge exists the call is
+# denied, so REMOVING the edge revokes access. The contract can further scope
+# *which* capabilities the edge grants:
+#   {}                                  → grants ALL (a plain trust edge)
+#   {"capabilities": ["energy.v2g.dispatch", ...]}  → grants only those
+#   {"capabilities": ["*"]}             → grants ALL (explicit wildcard)
+fn contract_allows(contract_json :: Str, capability :: Str) -> Bool {
+  match jv.parse(contract_json) {
+    Err(_) => true,
+    Ok(j) => match jv.get_field(j, "capabilities") {
+      Some(JList(items)) => list.fold(items, false, fn (acc :: Bool, it :: jv.Json) -> Bool {
+        match it {
+          JStr(s) => acc or s == capability or s == "*",
+          _ => acc,
+        }
+      }),
+      _ => true,
+    },
+  }
+}
+
+# Active edges caller -> target (any role).
+fn edges_between(db :: Db, from_agent :: Str, to_agent :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
+  let q := str.join(["SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent='", sq(from_agent), "' AND to_agent='", sq(to_agent), "' AND active=1"], "")
+  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [])
+  match rows {
+    Err(e) => Err(e.message),
+    Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
+      parse_rel_row(r)
+    })),
+  }
+}
+
+# True iff some active caller -> target edge grants `capability`. This is the
+# call gate the federation layer enforces before dispatching a peer's request.
+fn grants(db :: Db, from_agent :: Str, to_agent :: Str, capability :: Str) -> [sql, fs_read] Bool {
+  match edges_between(db, from_agent, to_agent) {
+    Err(_) => false,
+    Ok(edges) => list.fold(edges, false, fn (acc :: Bool, e :: Relationship) -> Bool {
+      acc or contract_allows(e.contract_json, capability)
+    }),
+  }
+}
+
+# Capability-agnostic gate: is there ANY active caller -> target edge at all?
+fn grants_any(db :: Db, from_agent :: Str, to_agent :: Str) -> [sql, fs_read] Bool {
+  match edges_between(db, from_agent, to_agent) {
+    Err(_) => false,
+    Ok(edges) => list.len(edges) > 0,
   }
 }
 

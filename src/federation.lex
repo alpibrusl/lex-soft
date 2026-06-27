@@ -26,6 +26,8 @@ import "std.str" as str
 
 import "std.list" as list
 
+import "std.int" as int
+
 import "std.map" as map
 
 import "std.crypto" as crypto
@@ -121,6 +123,10 @@ fn unauthorized_response() -> resp.Response {
   { status: 401, body: "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32099,\"message\":\"unauthorized: missing or invalid connection token\"}}", headers: map.from_list([("content-type", "application/json")]) }
 }
 
+fn forbidden_response() -> resp.Response {
+  { status: 403, body: "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32098,\"message\":\"forbidden: no relationship contract grants this capability\"}}", headers: map.from_list([("content-type", "application/json")]) }
+}
+
 # ── Registry → JSON ───────────────────────────────────────────────────────────
 fn agentref_json(a :: reg.AgentRef, base :: Str) -> jv.Json {
   JObj([("id", JStr(a.id)), ("kind", JStr(a.kind)), ("name", JStr(a.name)), ("status", JStr(a.status)), ("inbox_url", JStr(a.inbox_url)), ("card_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/.well-known/agent.json"))))), ("a2a_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/"))))), ("capabilities", JList(list.map(a.capabilities, fn (c :: Str) -> jv.Json {
@@ -212,7 +218,18 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
         }
       }
       if authed {
-        resp.json(srv.dispatch_request(agent_def, c.body))
+        let from_agent := ctx.header_or(c, "x-from-agent", "")
+        let capability := ctx.header_or(c, "x-capability", "")
+        let gated_ok := if str.is_empty(from_agent) {
+          true
+        } else {
+          rel.grants(db, from_agent, agent_id, capability)
+        }
+        if gated_ok {
+          resp.json(srv.dispatch_request(agent_def, c.body))
+        } else {
+          forbidden_response()
+        }
       } else {
         unauthorized_response()
       }
@@ -279,6 +296,52 @@ fn dir_list_json(rows :: List[DirRow]) -> Str {
   jv.stringify(JObj([("orgs", JList(list.map(rows, fn (r :: DirRow) -> jv.Json {
     dir_to_json(r)
   })))]))
+}
+
+# ── Federated publication (#26) ───────────────────────────────────────────────
+# The cross-domain directory is fed by peers PUBLISHING their own catalog —
+# their `/.well-known/agents.json` (the same document `mount_federation` serves)
+# — rather than a central crawler. (In-process serve handlers can't make
+# outbound calls, so PUSH is also the only viable federated model here; this
+# settles the roadmap's central-vs-federated question in favor of federated.)
+# We derive the org's advertised capabilities from the union of its agents'
+# capabilities, so an org never hand-maintains a separate capability list.
+fn caps_from_catalog(catalog :: jv.Json) -> List[Str] {
+  let agents := match jv.get_field(catalog, "agents") {
+    Some(JList(items)) => items,
+    _ => [],
+  }
+  list.fold(agents, [], fn (acc :: List[Str], a :: jv.Json) -> List[Str] {
+    match jv.get_field(a, "capabilities") {
+      Some(JList(caps)) => list.fold(caps, acc, fn (inner :: List[Str], cj :: jv.Json) -> List[Str] {
+        match cj {
+          JStr(s) => if list.fold(inner, false, fn (seen :: Bool, x :: Str) -> Bool {
+            seen or x == s
+          }) {
+            inner
+          } else {
+            list.concat(inner, [s])
+          },
+          _ => inner,
+        }
+      }),
+      _ => acc,
+    }
+  })
+}
+
+# Upsert one org's directory row from its published catalog. Pure SQL — safe to
+# call from a serve handler (no outbound HTTP).
+fn index_catalog(db :: Db, org :: Str, catalog_url :: Str, public_key :: Str, caps :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
+  let caps_json := jv.stringify(JList(list.map(caps, fn (c :: Str) -> jv.Json {
+    JStr(c)
+  })))
+  let now := time.now_str()
+  let q := str.join(["INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES ('", sq(org), "', '", sq(catalog_url), "', '", sq(caps_json), "', '", sq(public_key), "', '", now, "') ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"], "")
+  match sql.exec(db, q, []) {
+    Err(e) => Err(e.message),
+    Ok(_) => Ok(()),
+  }
 }
 
 # ── Typed capability matchmaking (see matchmaking.lex) ────────────────────────
@@ -417,7 +480,33 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
       },
     }
   })
-  let with_dir_list := router.route_effectful(with_dir_post, "GET", "/directory", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_publish := router.route_effectful(with_dir_post, "POST", "/directory/publish", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match jv.parse(c.body) {
+      Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
+      Ok(j) => {
+        let d_org := jstr(j, "org")
+        let catalog_url := jstr(j, "catalog_url")
+        if str.is_empty(d_org) {
+          resp.bad_request("{\"error\":\"org is required\"}")
+        } else {
+          if str.is_empty(catalog_url) {
+            resp.bad_request("{\"error\":\"catalog_url is required\"}")
+          } else {
+            let catalog := match jv.get_field(j, "catalog") {
+              Some(cat) => cat,
+              None => JObj([]),
+            }
+            let caps := caps_from_catalog(catalog)
+            match index_catalog(db, d_org, catalog_url, jstr(j, "public_key"), caps) {
+              Err(e) => resp.json(str.concat("{\"error\":", str.concat(jv.stringify(JStr(e)), "}"))),
+              Ok(_) => resp.json(str.concat("{\"ok\":true,\"org\":", str.concat(jv.stringify(JStr(d_org)), str.concat(",\"capabilities\":", str.concat(int.to_str(list.len(caps)), "}"))))),
+            }
+          }
+        }
+      },
+    }
+  })
+  let with_dir_list := router.route_effectful(with_dir_publish, "GET", "/directory", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     resp.json(dir_list_json(dir_query(db, "")))
   })
   let with_dir_find := router.route_effectful(with_dir_list, "GET", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
