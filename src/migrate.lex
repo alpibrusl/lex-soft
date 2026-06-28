@@ -19,7 +19,7 @@ fn ddl_agents_tenant_idx() -> Str {
 }
 
 fn ddl_relationships() -> Str {
-  "CREATE TABLE IF NOT EXISTS relationships (id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, role TEXT NOT NULL, contract_json TEXT NOT NULL DEFAULT '{}', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
+  "CREATE TABLE IF NOT EXISTS relationships (id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, role TEXT NOT NULL, contract_json TEXT NOT NULL DEFAULT '{}', active BIGINT NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
 }
 
 fn ddl_rel_idx() -> Str {
@@ -52,7 +52,7 @@ fn ddl_traces_idx() -> Str {
 #   expires_at — optional ISO ts; expired facts drop out of recall (staleness)
 #   updated_at — last write time
 fn ddl_agent_memory() -> Str {
-  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL, mkey TEXT NOT NULL DEFAULT '', mtype TEXT NOT NULL DEFAULT 'semantic', importance TEXT NOT NULL DEFAULT 'medium', scope TEXT NOT NULL DEFAULT 'global', superseded INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
+  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL, mkey TEXT NOT NULL DEFAULT '', mtype TEXT NOT NULL DEFAULT 'semantic', importance TEXT NOT NULL DEFAULT 'medium', scope TEXT NOT NULL DEFAULT 'global', superseded BIGINT NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
 }
 
 fn ddl_agent_memory_idx() -> Str {
@@ -98,7 +98,7 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __mc2 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mtype TEXT NOT NULL DEFAULT 'semantic'")
                 let __mc3 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium'")
                 let __mc4 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
-                let __mc5 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0")
+                let __mc5 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN superseded BIGINT NOT NULL DEFAULT 0")
                 let __mc6 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
                 let __mc7 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
                 let __memk := exec_ddl_tolerant(db, ddl_agent_memory_key_idx())
