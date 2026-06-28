@@ -129,7 +129,7 @@ fn forbidden_response() -> resp.Response {
 
 # ── Registry → JSON ───────────────────────────────────────────────────────────
 fn agentref_json(a :: reg.AgentRef, base :: Str) -> jv.Json {
-  JObj([("id", JStr(a.id)), ("kind", JStr(a.kind)), ("name", JStr(a.name)), ("status", JStr(a.status)), ("inbox_url", JStr(a.inbox_url)), ("card_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/.well-known/agent.json"))))), ("a2a_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/"))))), ("capabilities", JList(list.map(a.capabilities, fn (c :: Str) -> jv.Json {
+  JObj([("id", JStr(a.id)), ("kind", JStr(a.kind)), ("name", JStr(a.name)), ("status", JStr(a.status)), ("tenant", JStr(a.tenant)), ("inbox_url", JStr(a.inbox_url)), ("card_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/.well-known/agent.json"))))), ("a2a_url", JStr(str.concat(base, str.concat("/agents/", str.concat(a.id, "/"))))), ("capabilities", JList(list.map(a.capabilities, fn (c :: Str) -> jv.Json {
     JStr(c)
   })))])
 }
