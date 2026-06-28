@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lex · A2A platform</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','monospace'] } } } };
+</script>
+<style>
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:#1e293b;border-radius:6px}
+body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.nav-item.active{background:#0c1322;color:#7dd3fc;border-color:#1e3a5f}
+.nav-item.active svg{color:#38bdf8}
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 text-[13px]">
+<div id="toast" class="hidden fixed top-4 right-4 z-50 bg-rose-950 border border-rose-800 text-rose-200 px-4 py-2 rounded-lg text-xs shadow-lg"></div>
+<div class="flex h-screen overflow-hidden">
+
+  <!-- Sidebar -->
+  <aside class="w-60 shrink-0 border-r border-slate-800 bg-slate-900/40 flex flex-col">
+    <div class="px-5 py-4 border-b border-slate-800">
+      <div class="flex items-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px] shadow-emerald-400 animate-pulse"></span>
+        <span class="font-semibold text-slate-100 tracking-wide">lex · A2A</span>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-1" id="org-label">platform node</div>
+    </div>
+    <nav class="flex-1 p-3 space-y-1" id="nav"></nav>
+    <div class="px-5 py-3 border-t border-slate-800 text-[11px] text-slate-600" id="foot">agent-agnostic platform</div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 overflow-y-auto">
+    <header class="sticky top-0 z-10 bg-slate-950/90 backdrop-blur border-b border-slate-800 px-7 py-3.5 flex items-center gap-3">
+      <h1 class="text-[15px] font-semibold text-slate-100" id="view-title">Overview</h1>
+      <span class="text-[11px] text-slate-600" id="ts"></span>
+      <button id="refresh" class="ml-auto text-[12px] text-sky-300 border border-sky-900 bg-sky-950/40 hover:bg-sky-900/40 rounded-md px-3 py-1.5 transition">refresh</button>
+    </header>
+    <div class="p-7 max-w-6xl" id="content"></div>
+  </main>
+</div>
+
+<script>
+// ---------- helpers ----------
+var $ = function(s, r){ return (r||document).querySelector(s); };
+function el(html){ var t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
+function esc(s){ return (s==null?'':''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function toast(m){ var t=$('#toast'); t.textContent=m; t.classList.remove('hidden'); clearTimeout(t._h); t._h=setTimeout(function(){t.classList.add('hidden');},4500); }
+function stamp(){ $('#ts').textContent='· updated '+new Date().toLocaleTimeString(); }
+function getj(u){ return fetch(u).then(function(r){ return r.json(); }); }
+function loading(){ return '<div class="text-slate-600 py-16 text-center animate-pulse">loading…</div>'; }
+function empty(m){ return '<div class="text-slate-600 py-16 text-center">'+esc(m)+'</div>'; }
+function caps(arr){ return (arr||[]).map(function(c){ var v=typeof c==='string'?c:(c.id||''); return '<span class="inline-block bg-emerald-950/60 text-emerald-300 rounded px-1.5 py-0.5 text-[11px] mr-1 mb-1 font-mono">'+esc(v)+'</span>'; }).join(''); }
+function pill(t,cls){ return '<span class="inline-block rounded px-1.5 py-0.5 text-[11px] '+cls+'">'+esc(t)+'</span>'; }
+function card(inner){ return '<div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">'+inner+'</div>'; }
+
+// ---------- nav ----------
+var ICONS = {
+  overview:'<path d="M3 12l9-9 9 9M5 10v10h14V10"/>',
+  agents:'<circle cx="9" cy="7" r="3"/><path d="M3 21v-1a5 5 0 015-5h2M16 11a3 3 0 100-6 3 3 0 000 6zM14 21v-1a4 4 0 014-4h0a4 4 0 014 4v1"/>',
+  directory:'<path d="M4 6h16M4 12h16M4 18h10"/>',
+  caps:'<path d="M4 5h16v6H4zM4 15h10v4H4z"/>',
+  cp:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>',
+  trail:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 8l8 8"/>'
+};
+var VIEWS = [
+  {id:'overview', label:'Overview'},
+  {id:'agents', label:'Agents'},
+  {id:'directory', label:'Directory'},
+  {id:'caps', label:'Capabilities'},
+  {id:'cp', label:'Counterparty'},
+  {id:'trail', label:'Trail'}
+];
+var current = 'overview';
+function buildNav(){
+  $('#nav').innerHTML = VIEWS.map(function(v){
+    return '<button data-v="'+v.id+'" class="nav-item w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border border-transparent text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 transition text-[12.5px]">'
+      + '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'+ICONS[v.id]+'</svg>'
+      + v.label + '</button>';
+  }).join('');
+  $('#nav').querySelectorAll('.nav-item').forEach(function(b){ b.onclick=function(){ go(b.dataset.v); }; });
+}
+function go(v){
+  current = v;
+  $('#nav').querySelectorAll('.nav-item').forEach(function(b){ b.classList.toggle('active', b.dataset.v===v); });
+  $('#view-title').textContent = (VIEWS.filter(function(x){return x.id===v;})[0]||{}).label;
+  render();
+}
+$('#refresh').onclick = function(){ render(); };
+
+// ---------- views ----------
+function render(){
+  var c = $('#content');
+  if (current==='overview') return renderOverview(c);
+  if (current==='agents')   return renderAgents(c);
+  if (current==='directory')return renderDirectory(c);
+  if (current==='caps')     return renderCaps(c);
+  if (current==='cp')       return renderCp(c);
+  if (current==='trail')    return renderTrail(c);
+}
+
+function stat(label, val, sub){
+  return card('<div class="text-[11px] uppercase tracking-wider text-slate-500">'+esc(label)+'</div>'
+    + '<div class="text-3xl font-semibold text-slate-100 mt-1">'+val+'</div>'
+    + (sub?'<div class="text-[11px] text-slate-500 mt-1">'+sub+'</div>':''));
+}
+function renderOverview(c){
+  c.innerHTML = loading();
+  Promise.all([ getj('/peers').catch(function(){return{};}), getj('/.well-known/capabilities.json').catch(function(){return{};}), getj('/directory').catch(function(){return{};}) ])
+  .then(function(r){
+    var agents=r[0].agents||[], capsL=r[1].capabilities||[], orgs=r[2].orgs||[];
+    var kinds={}, tenants={};
+    agents.forEach(function(a){ kinds[a.kind]=(kinds[a.kind]||0)+1; if(a.tenant) tenants[a.tenant]=(tenants[a.tenant]||0)+1; });
+    var grid = '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">'
+      + stat('Agents', agents.length, Object.keys(kinds).length+' kinds')
+      + stat('Tenants', Object.keys(tenants).length||'—', 'isolated registries')
+      + stat('Capabilities', capsL.length, 'published schemas')
+      + stat('Directory orgs', orgs.length, 'cross-domain') + '</div>';
+    function breakdown(title, obj){
+      var keys=Object.keys(obj).sort();
+      return card('<div class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">'+title+'</div>'
+        + (keys.length? keys.map(function(k){ return '<div class="flex justify-between py-1 border-b border-slate-800/70 last:border-0"><span class="text-slate-400">'+esc(k)+'</span><span class="text-slate-200 font-medium">'+obj[k]+'</span></div>'; }).join('') : '<div class="text-slate-600">none</div>'));
+    }
+    c.innerHTML = grid + '<div class="grid md:grid-cols-2 gap-3 mt-3">'+breakdown('Agents by kind',kinds)+breakdown('Agents by tenant',tenants)+'</div>';
+    stamp();
+  });
+}
+
+function searchRow(id, ph, btn){
+  return '<div class="flex gap-2 mb-4"><input id="'+id+'" placeholder="'+esc(ph)+'" class="flex-1 max-w-md bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-[12.5px] outline-none focus:border-sky-600"/>'
+    + '<button id="'+id+'-go" class="bg-sky-950/50 border border-sky-900 text-sky-300 rounded-lg px-4 text-[12.5px] hover:bg-sky-900/40">'+btn+'</button></div>';
+}
+
+function renderAgents(c){
+  c.innerHTML = searchRow('a-tenant','filter by tenant (optional, e.g. acme-logistics)','load') + '<div id="a-out">'+loading()+'</div>';
+  function load(){
+    var t=$('#a-tenant').value.trim(); var u='/peers'+(t?('?tenant='+encodeURIComponent(t)):'');
+    getj(u).then(function(d){ var a=d.agents||[];
+      if(!a.length){ $('#a-out').innerHTML=empty('no agents'+(t?' in tenant '+t:'')); return; }
+      var byk={}; a.forEach(function(x){ (byk[x.kind]=byk[x.kind]||[]).push(x); });
+      $('#a-out').innerHTML = Object.keys(byk).sort().map(function(k){
+        return '<div class="text-[11px] uppercase tracking-wider text-slate-500 mt-5 mb-2 first:mt-0">'+esc(k)+' · '+byk[k].length+'</div>'
+          + '<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">'
+          + byk[k].map(function(x){ return card(
+              '<div class="flex items-center justify-between"><span class="font-mono text-slate-100 font-medium">'+esc(x.id)+'</span>'
+              + (x.status==='active'?pill('active','bg-emerald-950/60 text-emerald-300'):pill(x.status||'?','bg-slate-800 text-slate-400'))+'</div>'
+              + '<div class="text-[11px] text-slate-500 mt-0.5">'+esc(x.name||'')+(x.tenant?' · '+pill(x.tenant,'bg-indigo-950/60 text-indigo-300'):'')+'</div>'
+              + '<div class="mt-2">'+caps(x.capabilities)+'</div>'); }).join('') + '</div>';
+      }).join(''); stamp();
+    }).catch(function(e){ toast('agents: '+e.message); });
+  }
+  $('#a-go').onclick=load; $('#a-tenant').addEventListener('keydown',function(e){if(e.key==='Enter')load();}); load();
+}
+
+function renderDirectory(c){
+  c.innerHTML = searchRow('d-cap','find by capability (optional, e.g. energy.v2g.dispatch)','search') + '<div id="d-out">'+loading()+'</div>';
+  function load(){
+    var q=$('#d-cap').value.trim(); var u=q?('/directory/find?capability='+encodeURIComponent(q)):'/directory';
+    getj(u).then(function(d){ var o=d.orgs||[];
+      if(!o.length){ $('#d-out').innerHTML=empty('no orgs in the capability directory'+(q?' for '+q:'')); return; }
+      $('#d-out').innerHTML='<div class="grid sm:grid-cols-2 gap-3">'+o.map(function(x){ return card(
+        '<div class="font-mono text-slate-100 font-medium">'+esc(x.org)+'</div>'
+        + '<div class="text-[11px] text-slate-500 break-all">'+esc(x.catalog_url||'')+'</div>'
+        + '<div class="mt-2">'+caps(x.capabilities)+'</div>'); }).join('')+'</div>'; stamp();
+    }).catch(function(e){ toast('directory: '+e.message); });
+  }
+  $('#d-cap-go').onclick=load; $('#d-cap').addEventListener('keydown',function(e){if(e.key==='Enter')load();}); load();
+}
+
+function renderCaps(c){
+  c.innerHTML = loading();
+  getj('/.well-known/capabilities.json').then(function(d){ var caps=d.capabilities||[];
+    if(!caps.length){ c.innerHTML=empty('no capabilities published'); return; }
+    c.innerHTML='<div class="grid md:grid-cols-2 gap-3">'+caps.map(function(x){ return card(
+      '<div class="flex items-center gap-2"><span class="font-mono text-slate-100 font-medium">'+esc(x.id)+'</span>'+pill('v'+x.version,'bg-sky-950/60 text-sky-300')+'</div>'
+      + '<div class="text-[11px] text-slate-500 mt-1">'+esc(x.description||'')+'</div>'
+      + '<pre class="text-[11px] text-indigo-300/80 bg-slate-950/60 rounded-lg p-2 mt-2 overflow-x-auto font-mono">'+esc(JSON.stringify(x.request||{},null,1))+'</pre>'); }).join('')+'</div>'; stamp();
+  }).catch(function(e){ toast('capabilities: '+e.message); });
+}
+
+function scoreColor(s){ if(s==null) return 'text-slate-400'; if(s>=70) return 'text-emerald-400'; if(s>=40) return 'text-amber-400'; return 'text-rose-400'; }
+function renderCp(c){
+  c.innerHTML = searchRow('cp-org','org / agent id (e.g. grid-coordinator)','load') + '<div id="cp-out"></div>';
+  function load(){
+    var o=$('#cp-org').value.trim(); if(!o){ toast('enter an org / agent id'); return; }
+    $('#cp-out').innerHTML=loading();
+    getj('/counterparties/'+encodeURIComponent(o)).then(function(d){ if(d.error){ $('#cp-out').innerHTML=empty(d.error); return; }
+      var rep=d.reputation||{}, sp=d.spend||{}, rels=d.relationships||[], id=d.identity||{};
+      var gs=d.good_standing?pill('good standing','bg-emerald-950/60 text-emerald-300'):pill('flagged','bg-rose-950/60 text-rose-300');
+      var top='<div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">'
+        + card('<div class="text-[11px] uppercase tracking-wider text-slate-500">trust score</div><div class="text-5xl font-bold mt-1 '+scoreColor(d.trust_score)+'">'+(d.trust_score!=null?d.trust_score:'—')+'</div><div class="mt-2">'+gs+'</div>')
+        + card('<div class="text-[11px] uppercase tracking-wider text-slate-500 mb-1">reputation</div><div class="flex justify-between py-1"><span class="text-slate-400">verified</span><b class="text-slate-100">'+(rep.verified||0)+'</b></div><div class="flex justify-between py-1"><span class="text-slate-400">interactions</span><b class="text-slate-100">'+(d.interactions||0)+'</b></div>')
+        + card('<div class="text-[11px] uppercase tracking-wider text-slate-500 mb-1">spend</div><div class="flex justify-between py-1"><span class="text-slate-400">approved</span><b class="text-emerald-300">'+(sp.approved||0)+'</b></div><div class="flex justify-between py-1"><span class="text-slate-400">denied</span><b class="text-rose-300">'+(sp.denied||0)+'</b></div><div class="flex justify-between py-1"><span class="text-slate-400">total</span><b class="text-slate-100">'+(sp.total||0)+'</b></div>')
+        + card('<div class="text-[11px] uppercase tracking-wider text-slate-500 mb-1">identity</div><div class="text-slate-400">'+esc(id.kind||'unknown')+' · '+esc(id.status||'—')+'</div><div class="mt-2">'+(caps(id.capabilities)||'<span class="text-slate-600">none</span>')+'</div>')
+        + '</div>';
+      var rtbl = '<div class="text-[11px] uppercase tracking-wider text-slate-500 mt-6 mb-2">relationships · '+rels.length+'</div>'
+        + (rels.length? '<div class="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden"><table class="w-full text-[12px]"><thead><tr class="text-slate-500 text-[10px] uppercase"><th class="text-left font-medium px-4 py-2">to</th><th class="text-left font-medium px-4 py-2">role</th><th class="text-left font-medium px-4 py-2">contract</th></tr></thead><tbody>'
+            + rels.map(function(r){ return '<tr class="border-t border-slate-800/70"><td class="px-4 py-2 font-mono">'+esc(r.to)+'</td><td class="px-4 py-2">'+pill(r.role,'bg-slate-800 text-sky-300')+'</td><td class="px-4 py-2 font-mono text-indigo-300/80 break-all">'+esc(r.contract)+'</td></tr>'; }).join('')
+            + '</tbody></table></div>' : '<div class="text-slate-600">none</div>');
+      $('#cp-out').innerHTML = top + rtbl; stamp();
+    }).catch(function(e){ toast('counterparty: '+e.message); });
+  }
+  $('#cp-org-go').onclick=load; $('#cp-org').addEventListener('keydown',function(e){if(e.key==='Enter')load();});
+}
+
+function renderTrail(c){
+  c.innerHTML = searchRow('t-id','trail id (content-addressed event id)','verify') + '<div id="t-out"></div>';
+  function load(){
+    var id=$('#t-id').value.trim(); if(!id){ toast('enter a trail id'); return; }
+    $('#t-out').innerHTML=loading();
+    getj('/trails/'+encodeURIComponent(id)).then(function(d){ if(d.error){ $('#t-out').innerHTML=empty(d.error); return; }
+      var v=d.valid?pill('chain valid · tamper-free','bg-emerald-950/60 text-emerald-300'):pill('INVALID','bg-rose-950/60 text-rose-300');
+      var evs=d.events||[];
+      var head=card('<div class="flex items-center justify-between"><span class="text-[11px] uppercase tracking-wider text-slate-500">trail</span>'+v+'</div><div class="font-mono text-[11px] text-indigo-300/80 break-all mt-1">'+esc(d.trail_id)+'</div>');
+      var chain = '<div class="text-[11px] uppercase tracking-wider text-slate-500 mt-6 mb-2">event chain · '+evs.length+'</div>';
+      chain += evs.length? '<div class="relative pl-5">'+evs.map(function(e,i){
+        return '<div class="relative pb-4 border-l border-slate-700 pl-5">'
+          + '<span class="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-sky-500"></span>'
+          + '<div class="flex items-center gap-2">'+pill(e.kind||'event','bg-slate-800 text-sky-300')+'<span class="text-[10px] text-slate-600">#'+i+'</span></div>'
+          + '<div class="font-mono text-[11px] text-slate-500 mt-0.5">id '+esc((''+(e.id||'')).slice(0,20))+'…</div></div>';
+      }).join('')+'</div>' : '<div class="text-slate-600">no events</div>';
+      $('#t-out').innerHTML = head + chain; stamp();
+    }).catch(function(e){ toast('trail: '+e.message); });
+  }
+  $('#t-id-go').onclick=load; $('#t-id').addEventListener('keydown',function(e){if(e.key==='Enter')load();});
+}
+
+// ---------- boot ----------
+buildNav(); go('overview');
+</script>
+</body>
+</html>
