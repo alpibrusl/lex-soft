@@ -134,12 +134,37 @@ fn agentref_json(a :: reg.AgentRef, base :: Str) -> jv.Json {
   })))])
 }
 
+fn render_agents(refs :: List[reg.AgentRef], base :: Str) -> Str {
+  jv.stringify(JObj([("agents", JList(list.map(refs, fn (a :: reg.AgentRef) -> jv.Json {
+    agentref_json(a, base)
+  })))]))
+}
+
 fn registry_json(db :: Db, base :: Str) -> [sql, fs_read] Str {
   match reg.list_all(db) {
     Err(_) => "{\"agents\":[]}",
-    Ok(refs) => jv.stringify(JObj([("agents", JList(list.map(refs, fn (a :: reg.AgentRef) -> jv.Json {
-      agentref_json(a, base)
-    })))])),
+    Ok(refs) => render_agents(refs, base),
+  }
+}
+
+# Tenant-scoped catalog (#26): only the named tenant's agents. This is the
+# "sees" half of the tenant boundary at the discovery routes — `?tenant=` on
+# the catalog / peers list. (Production should bind the tenant to the
+# authenticated caller rather than trust an open query param; this filter is the
+# additive mechanism that makes scoped discovery available.)
+fn registry_json_tenant(db :: Db, base :: Str, tenant :: Str) -> [sql, fs_read] Str {
+  match reg.list_by_tenant(db, tenant) {
+    Err(_) => "{\"agents\":[]}",
+    Ok(refs) => render_agents(refs, base),
+  }
+}
+
+# Pick the scoped catalog when `?tenant=` is present, else the full one.
+fn catalog_for(db :: Db, base :: Str, tenant :: Str) -> [sql, fs_read] Str {
+  if str.is_empty(tenant) {
+    registry_json(db, base)
+  } else {
+    registry_json_tenant(db, base, tenant)
   }
 }
 
@@ -394,11 +419,11 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
     }
     resp.json(jv.stringify(JObj([("org", JStr(org)), ("base_url", JStr(base)), ("alg", JStr("ed25519")), ("public_key", JStr(cfg.pub_b64)), ("payload", JStr(payload)), ("signature", JStr(sig))])))
   })
-  let with_catalog := router.route_effectful(with_identity, "GET", "/.well-known/agents.json", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    resp.json(registry_json(db, base))
+  let with_catalog := router.route_effectful(with_identity, "GET", "/.well-known/agents.json", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    resp.json(catalog_for(db, base, ctx.query_param_or(c, "tenant", "")))
   })
-  let with_list := router.route_effectful(with_catalog, "GET", "/peers", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    resp.json(registry_json(db, base))
+  let with_list := router.route_effectful(with_catalog, "GET", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    resp.json(catalog_for(db, base, ctx.query_param_or(c, "tenant", "")))
   })
   let with_peers := router.route_effectful(with_list, "POST", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match jv.parse(c.body) {
