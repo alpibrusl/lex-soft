@@ -274,8 +274,42 @@ fn published_catalog_is_discoverable() -> [sql, fs_read, fs_write, time] Result[
   }
 }
 
+# Tenant-scoped discovery (#26 "sees" half): `?tenant=` on the catalog / peers
+# list returns only that tenant's agents; no filter lists all.
+fn get_req(path :: Str, query :: Str) -> ctx.RawRequest {
+  { body: "", method: "GET", path: path, query: query, headers: map.from_list([]) }
+}
+
+fn tenant_scoped_discovery() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let __1 := reg.register_in(db, "acme", "truck-1", "truck", "Truck 1", "http://x/1", ["logistics.truck.handle"])
+      let __2 := reg.register_in(db, "voltgrid", "v2g-north", "v2g", "V2G North", "http://x/v", ["energy.v2g.dispatch"])
+      let r := fed.mount_federation(router.new(), db, demo_cfg())
+      let acme := router.dispatch(r, get_req("/peers", "tenant=acme"))
+      let volt := router.dispatch(r, get_req("/.well-known/agents.json", "tenant=voltgrid"))
+      let all := router.dispatch(r, get_req("/peers", ""))
+      if str.contains(acme.body, "truck-1") and str.contains(acme.body, "v2g-north") == false {
+        if str.contains(volt.body, "v2g-north") and str.contains(volt.body, "truck-1") == false {
+          if str.contains(all.body, "truck-1") and str.contains(all.body, "v2g-north") {
+            Ok(())
+          } else {
+            Err("unscoped /peers must list both tenants")
+          }
+        } else {
+          Err("?tenant=voltgrid leaked acme's agents (or missing its own)")
+        }
+      } else {
+        Err("?tenant=acme leaked voltgrid's agents (or missing its own)")
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
-  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), caps_union_dedup(), published_catalog_is_discoverable()]
+  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
