@@ -370,7 +370,16 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let __t3 := trace.record(tdb, run_id, cfg.id, "llm_done", answer)
     let trail_id := settlement.record_run(settlement.trail_on(tdb), cfg.id, "handle", text_in, answer, result.tools)
     let trail_artifact := { name: "trail", index: 0, parts: [DataPart(JObj([("trail_id", JStr(trail_id)), ("verify_url", JStr(str.concat("/trails/", trail_id)))]))] }
-    { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [trail_artifact] }
+    let escalated := list.fold(result.tools, false, fn (acc :: Bool, tname :: Str) -> Bool {
+      acc or tname == "escalate"
+    })
+    if escalated {
+      let __t4 := trace.record(tdb, run_id, cfg.id, "escalated", answer)
+      let esc_artifact := { name: "escalation", index: 1, parts: [DataPart(JObj([("status", JStr("input-required")), ("approvals_url", JStr("/approvals")), ("resume", JStr("re-send tasks/send with the same contextId once the human decides"))]))] }
+      { next_state: TSInputRequired, reply: Some(msg.agent_text(answer)), artifacts: [trail_artifact, esc_artifact] }
+    } else {
+      { next_state: TSCompleted, reply: Some(msg.agent_text(answer)), artifacts: [trail_artifact] }
+    }
   }
 }
 

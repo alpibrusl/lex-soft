@@ -64,7 +64,8 @@ var ICONS = {
   directory:'<path d="M4 6h16M4 12h16M4 18h10"/>',
   caps:'<path d="M4 5h16v6H4zM4 15h10v4H4z"/>',
   cp:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>',
-  trail:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 8l8 8"/>'
+  trail:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 8l8 8"/>',
+  approvals:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>'
 };
 var VIEWS = [
   {id:'overview', label:'Overview'},
@@ -72,7 +73,8 @@ var VIEWS = [
   {id:'directory', label:'Directory'},
   {id:'caps', label:'Capabilities'},
   {id:'cp', label:'Counterparty'},
-  {id:'trail', label:'Trail'}
+  {id:'trail', label:'Trail'},
+  {id:'approvals', label:'Approvals'}
 ];
 var current = 'overview';
 function buildNav(){
@@ -100,6 +102,7 @@ function render(){
   if (current==='caps')     return renderCaps(c);
   if (current==='cp')       return renderCp(c);
   if (current==='trail')    return renderTrail(c);
+  if (current==='approvals')return renderApprovals(c);
 }
 
 function stat(label, val, sub){
@@ -226,6 +229,26 @@ function renderTrail(c){
     }).catch(function(e){ toast('trail: '+e.message); });
   }
   $('#t-id-go').onclick=load; $('#t-id').addEventListener('keydown',function(e){if(e.key==='Enter')load();});
+}
+
+function renderApprovals(c){
+  c.innerHTML = loading();
+  getj('/approvals').then(function(d){ var a=d.approvals||[];
+    if(!a.length){ c.innerHTML=empty('no pending approvals — agents are operating autonomously'); return; }
+    c.innerHTML = a.map(function(x){ return card(
+      '<div class="flex items-center gap-2">'+pill(x.kind||'other','bg-amber-950/60 text-amber-300')+'<span class="font-mono text-slate-400 text-[11px]">'+esc(x.from_agent)+'</span><span class="text-[10px] text-slate-600 ml-auto">'+esc(x.created_at||'')+'</span></div>'
+      + '<div class="text-slate-100 mt-2">'+esc(x.question)+'</div>'
+      + (x.detail?'<div class="text-[11px] text-slate-500 mt-1">'+esc(x.detail)+'</div>':'')
+      + '<div class="flex gap-2 mt-3">'
+      + '<button data-id="'+esc(x.id)+'" data-a="1" class="dec bg-emerald-950/50 border border-emerald-800 text-emerald-300 rounded-lg px-4 py-1.5 text-[12px] hover:bg-emerald-900/40">approve</button>'
+      + '<button data-id="'+esc(x.id)+'" data-a="0" class="dec bg-rose-950/50 border border-rose-800 text-rose-300 rounded-lg px-4 py-1.5 text-[12px] hover:bg-rose-900/40">deny</button>'
+      + '<span class="font-mono text-[10px] text-slate-600 self-center">'+esc(x.id)+'</span></div>'); }).join('<div class="h-3"></div>');
+    c.querySelectorAll('.dec').forEach(function(b){ b.onclick=function(){
+      fetch('/approvals/'+b.dataset.id+'/decide',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approve:b.dataset.a==='1',by:'dashboard'})})
+        .then(function(r){return r.json();}).then(function(res){ if(res.error){toast(res.error);} renderApprovals(c); })
+        .catch(function(e){ toast('decide: '+e.message); }); }; });
+    stamp();
+  }).catch(function(e){ toast('approvals: '+e.message); });
 }
 
 // ---------- boot ----------
