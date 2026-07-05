@@ -43,7 +43,11 @@ import "lex-llm/src/agent" as ag
 
 import "lex-agent-llm/src/bridge" as bridge
 
+import "std.str" as str
+
 import "./mesh" as mesh
+
+import "./escalation" as escalation
 
 # Entry point: read the request file, build the agent from a caller tool factory,
 # run the loop, and print the {text, tools} result. `tool_factory` receives the
@@ -74,7 +78,7 @@ fn get_str(j :: jv.Json, key :: Str, default :: Str) -> Str {
   }
 }
 
-fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, proc] Str {
+fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, env, proc] Str {
   let provider_name := get_str(j, "provider", "vertex")
   let api_url := get_str(j, "api_url", "")
   let api_key := get_str(j, "api_key", "")
@@ -107,7 +111,16 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
     Some(JList(xs)) => xs,
     _ => [],
   }
-  let tools := list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers))
+  let gateway_url := match env.get("HUMAN_GATEWAY_URL") {
+    Some(u) => u,
+    None => "",
+  }
+  let esc_tools := if str.is_empty(str.trim(gateway_url)) {
+    []
+  } else {
+    [escalation.make_escalate_tool(agent_id, gateway_url)]
+  }
+  let tools := list.concat(list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers)), esc_tools)
   let conv := list.concat(hist_msgs, [UserMsg(user)])
   let agent := ag.make_agent(agent_id, system, model_ref, provider, tools, ag.default_options())
   let steps := iter.to_list(ag.run_loop(agent, conv))
