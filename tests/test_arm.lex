@@ -30,7 +30,7 @@ import "../src/trace" as trace
 import "../src/arm" as arm
 
 fn score_of(log :: tlog.Log, cp :: Str) -> [sql] Int {
-  arm.trust_score(arm.tally(log, cp))
+  arm.trust_score(arm.tally(log.db, cp))
 }
 
 # 3 verified of 4 interactions → 75; and re-deriving it gives the same answer.
@@ -84,7 +84,7 @@ fn unknown_is_neutral() -> [sql, fs_read, fs_write, time, random, crypto] Result
     Ok(db) => {
       let __m := migrate.run(db)
       let log := settlement.trail_on(db)
-      let t := arm.tally(log, "stranger")
+      let t := arm.tally(log.db, "stranger")
       if arm.trust_score(t) == 50 and not arm.in_good_standing(t, 60) {
         Ok(())
       } else {
@@ -143,7 +143,7 @@ fn good_standing_gate() -> [sql, fs_read, fs_write, time, random, crypto] Result
       let log := settlement.trail_on(db)
       let __1 := arm.record_outcome(log, "good", true)
       let __2 := arm.record_outcome(log, "good", true)
-      if arm.in_good_standing(arm.tally(log, "good"), 60) {
+      if arm.in_good_standing(arm.tally(log.db, "good"), 60) {
         Ok(())
       } else {
         Err("a peer with all-verified outcomes should be in good standing")

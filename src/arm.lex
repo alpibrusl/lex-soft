@@ -20,6 +20,8 @@ import "std.list" as list
 
 import "std.int" as int
 
+import "std.sql" as sql
+
 import "lex-schema/json_value" as jv
 
 import "lex-trail/log" as tlog
@@ -123,14 +125,33 @@ fn fold_event(acc :: Tally, e :: ev.Event, cp :: Str) -> Tally {
   }
 }
 
+fn sq_like(s :: Str) -> Str {
+  str.replace(str.replace(str.replace(s, "'", "''"), "%", "\\%"), "_", "\\_")
+}
+
+# ARM events for one counterparty, straight from SQL rather than a full-trail
+# scan: `fold_event` only ever matches kind IN (arm.outcome, arm.spend) with a
+# payload `cp` field equal to the target, so pre-filtering on both at the SQL
+# layer (idx_events_kind + a LIKE on the id, refined exactly by fold_event
+# below) cuts the work from "every event ever appended to this trail" down to
+# a handful — the shape that made tally() O(total trail size) per counterparty
+# query, which blew the VM step budget once a long-running node's trail grew
+# into the thousands of events (found while ARM-testing a live demo node).
+fn arm_events_for(db :: Db, cp :: Str) -> [sql] List[ev.Event] {
+  let q := str.join(["SELECT id, kind, parent, payload_json, ts_ms FROM events WHERE kind IN ('", k_outcome(), "', '", k_spend(), "') AND payload_json LIKE '%", sq_like(cp), "%' ESCAPE '\\' ORDER BY ts_ms ASC"], "")
+  let rows :: Result[List[{ id :: Str, kind :: Str, parent :: Option[Str], payload_json :: Str, ts_ms :: Int }], SqlError] := sql.query(db, q, [])
+  match rows {
+    Err(_) => [],
+    Ok(rs) => list.map(rs, fn (r :: { id :: Str, kind :: Str, parent :: Option[Str], payload_json :: Str, ts_ms :: Int }) -> ev.Event {
+      { id: r.id, kind: r.kind, parent: r.parent, payload_json: r.payload_json, ts_ms: r.ts_ms }
+    }),
+  }
+}
+
 # Tally a counterparty's ARM events from the trail (reproducible: same trail →
 # same tally → same score).
-fn tally(log :: tlog.Log, cp :: Str) -> [sql] Tally {
-  let events := match tlog.range(log, 0, 99999999999999) {
-    Ok(es) => es,
-    Err(_) => [],
-  }
-  list.fold(events, { interactions: 0, verified: 0, spends: 0, denied_spends: 0, total_spend: 0 }, fn (acc :: Tally, e :: ev.Event) -> Tally {
+fn tally(db :: Db, cp :: Str) -> [sql] Tally {
+  list.fold(arm_events_for(db, cp), { interactions: 0, verified: 0, spends: 0, denied_spends: 0, total_spend: 0 }, fn (acc :: Tally, e :: ev.Event) -> Tally {
     fold_event(acc, e, cp)
   })
 }
@@ -177,7 +198,7 @@ fn profile_json(db :: Db, log :: tlog.Log, cp :: Str) -> [sql, fs_read, time] St
     })),
     Err(_) => JList([]),
   }
-  let t := tally(log, cp)
+  let t := tally(db, cp)
   let mem := match jv.parse(trace.recall_memory_json(db, cp, 20)) {
     Ok(j) => j,
     Err(_) => JNull,
