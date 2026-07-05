@@ -65,7 +65,8 @@ var ICONS = {
   caps:'<path d="M4 5h16v6H4zM4 15h10v4H4z"/>',
   cp:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>',
   trail:'<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 8l8 8"/>',
-  approvals:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>'
+  approvals:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>',
+  onboard:'<path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/>'
 };
 var VIEWS = [
   {id:'overview', label:'Overview'},
@@ -74,7 +75,8 @@ var VIEWS = [
   {id:'caps', label:'Capabilities'},
   {id:'cp', label:'Counterparty'},
   {id:'trail', label:'Trail'},
-  {id:'approvals', label:'Approvals'}
+  {id:'approvals', label:'Approvals'},
+  {id:'onboard', label:'Onboard'}
 ];
 var current = 'overview';
 function buildNav(){
@@ -103,6 +105,7 @@ function render(){
   if (current==='cp')       return renderCp(c);
   if (current==='trail')    return renderTrail(c);
   if (current==='approvals')return renderApprovals(c);
+  if (current==='onboard')  return renderOnboard(c);
 }
 
 function stat(label, val, sub){
@@ -249,6 +252,31 @@ function renderApprovals(c){
         .catch(function(e){ toast('decide: '+e.message); }); }; });
     stamp();
   }).catch(function(e){ toast('approvals: '+e.message); });
+}
+
+function code(sn){ return '<pre class="text-[11px] text-indigo-300/90 bg-slate-950/70 border border-slate-800 rounded-lg p-3 mt-2 overflow-x-auto font-mono whitespace-pre">'+esc(sn)+'</pre>'; }
+function step(n, title, body){ return card('<div class="flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-sky-950 border border-sky-800 text-sky-300 text-[11px] flex items-center justify-center font-semibold">'+n+'</span><span class="text-slate-100 font-medium">'+title+'</span></div><div class="mt-2 text-[12px] text-slate-400">'+body+'</div>'); }
+function renderOnboard(c){
+  var O = window.location.origin;
+  c.innerHTML = loading();
+  Promise.all([ getj('/.well-known/agent-identity.json').catch(function(){return{};}), getj('/.well-known/capabilities.json').catch(function(){return{};}) ])
+  .then(function(r){
+    var org = r[0].org || 'this node', capsL = (r[1].capabilities||[]);
+    var capId = capsL.length ? capsL[0].id : 'logistics.truck.handle';
+    var h = card('<div class="text-slate-100 font-medium">Bring your own agent — any language, four wire contracts</div>'
+      + '<div class="text-[12px] text-slate-400 mt-1">You are looking at <span class="font-mono text-sky-300">'+esc(org)+'</span>. Any agent that speaks Google A2A can discover, join, transact and be verified here — lex is just the reference implementation. Reference agents (Python: a2a-sdk, LangGraph, Pydantic AI, OpenAI Agents SDK · TS: @a2a-js/sdk, Vercel AI, Mastra, LangChain.js), an onboarding SDK and a conformance suite live in <span class="font-mono text-emerald-300">github.com/alpibrusl/a2a-agents</span>.</div>');
+    h += '<div class="grid md:grid-cols-2 gap-3 mt-3">';
+    h += step(1, 'Discover', 'Read the node identity + agent catalog, and resolve capability schemas before sending work.'
+      + code('curl '+O+'/.well-known/agent-identity.json\ncurl '+O+'/.well-known/agents.json\ncurl '+O+'/.well-known/capabilities.json\ncurl "'+O+'/directory/find?capability='+capId+'"'));
+    h += step(2, 'Connect', 'Onboard your org + agents; you get a connection token to present as a Bearer on dispatch.'
+      + code('curl -X POST '+O+'/connections -H "Content-Type: application/json" -d \'{\n  "org": "your-org",\n  "agents": [{ "id": "your-agent", "kind": "external",\n    "inbox_url": "https://your-host/agents/your-agent/",\n    "capabilities": ["your.capability"] }]\n}\''));
+    h += step(3, 'Task', 'Send work to any listed agent with a plain A2A tasks/send. The reply carries a trail artifact.'
+      + code('curl -X POST '+O+'/agents/truck-01/ -H "Authorization: Bearer <token>" \\\n  -H "Content-Type: application/json" -d \'{\n  "jsonrpc":"2.0","method":"tasks/send","id":"1",\n  "params":{"id":"t1","contextId":"ctx1","message":{"role":"user",\n    "parts":[{"type":"text","text":"..."}]}}\n}\''));
+    h += step(4, 'Verify & escalate', 'Re-derive the outcome from the tamper-evident trail; check counterparty trust. A task returning <span class="font-mono text-amber-300">input-required</span> is paused on a human decision — resolve it under Approvals, then re-send on the same contextId.'
+      + code('curl '+O+'/trails/&lt;trail_id&gt;\ncurl -X POST '+O+'/verify -d \'{"trail_id":"...","capability_id":"'+capId+'"}\'\ncurl '+O+'/counterparties/&lt;org&gt;\ncurl '+O+'/approvals'));
+    h += '</div>';
+    c.innerHTML = h; stamp();
+  });
 }
 
 // ---------- boot ----------
