@@ -63,6 +63,30 @@ fn ddl_agent_memory_key_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(agent_id, scope, mkey, superseded)"
 }
 
+# Control-plane identity (#59): the persistent customer principal and the agent
+# credentials it issues. `accounts.org` is the mesh/registry join key (#26);
+# `credentials.jti` mirrors the minted conn-token jti so a presented token
+# resolves back to its account (identity.resolve_subject).
+fn ddl_accounts() -> Str {
+  "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, org TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', plan TEXT NOT NULL DEFAULT 'free', created_at TEXT NOT NULL)"
+}
+
+fn ddl_accounts_org_idx() -> Str {
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_org ON accounts(org)"
+}
+
+fn ddl_credentials() -> Str {
+  "CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, account TEXT NOT NULL, org TEXT NOT NULL, agent_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '', jti TEXT NOT NULL, revoked BIGINT NOT NULL DEFAULT 0, created_at TEXT NOT NULL)"
+}
+
+fn ddl_credentials_jti_idx() -> Str {
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_jti ON credentials(jti)"
+}
+
+fn ddl_credentials_account_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_credentials_account ON credentials(account)"
+}
+
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, stmt, []) {
     Err(e) => Err(e.message),
@@ -102,6 +126,11 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __mc6 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
                 let __mc7 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
                 let __memk := exec_ddl_tolerant(db, ddl_agent_memory_key_idx())
+                let __acc := exec_ddl_tolerant(db, ddl_accounts())
+                let __acci := exec_ddl_tolerant(db, ddl_accounts_org_idx())
+                let __cred := exec_ddl_tolerant(db, ddl_credentials())
+                let __credi := exec_ddl_tolerant(db, ddl_credentials_jti_idx())
+                let __credai := exec_ddl_tolerant(db, ddl_credentials_account_idx())
                 jobs.init_schema(db)
               },
             },
