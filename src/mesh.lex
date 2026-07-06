@@ -29,6 +29,8 @@ import "std.str" as str
 
 import "std.map" as map
 
+import "./resolver" as resolver
+
 fn pfield(pj :: jv.Json, key :: Str) -> Str {
   match jv.get_field(pj, key) {
     Some(JStr(sv)) => sv,
@@ -36,27 +38,8 @@ fn pfield(pj :: jv.Json, key :: Str) -> Str {
   }
 }
 
-# Intent → acceptable relationship roles (empty = no filter / all peers).
-# Each intent maps to the roles that satisfy it. The intent name itself is
-# always included, so a peer registered with role == intent (e.g. a connector
-# with role "dispatch") is reachable via find_peers(intent). An empty list means
-# "any authorized peer" (see role_matches).
-fn intent_roles(intent :: Str) -> List[Str] {
-  if intent == "charging" {
-    ["preferred_charger", "charger", "charging"]
-  } else {
-    if intent == "dispatch" {
-      ["contracted", "freelance", "dispatch"]
-    } else {
-      if intent == "reporting" {
-        ["reporting"]
-      } else {
-        []
-      }
-    }
-  }
-}
-
+# Intent → roles is host-supplied (resolver.IntentRoles); the core no longer
+# hardcodes a domain vocabulary. An empty match set means "any peer" (role_matches).
 fn role_matches(roles :: List[Str], role :: Str) -> Bool {
   if list.is_empty(roles) {
     true
@@ -105,14 +88,21 @@ fn post_a2a(url :: Str, token :: Str, body :: Str) -> [net, io, proc] Result[jv.
 }
 
 # Build the mesh tools from a peers snapshot (List of {id,kind,name,inbox_url,role}
-# JSON objects) and the calling agent's id.
-fn make_mesh_tools(agent_id :: Str, peers :: List[jv.Json]) -> List[t.Tool] {
-  [t.define("find_peers", "Find active peer agents you are authorised to contact for an intent. Intents: charging, dispatch, reporting, coordination. Returns peer ids you can pass to send_message.", { title: "FindPeers", description: "Peer resolution by intent.", fields: [s.required_str("intent", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
+# JSON objects), the calling agent's id, and the host's intent→roles map. The
+# find_peers tool describes its intents from that map, so the core names none.
+fn make_mesh_tools(agent_id :: Str, peers :: List[jv.Json], map :: List[resolver.IntentRoles]) -> List[t.Tool] {
+  let intents := resolver.intents_of(map)
+  let find_desc := if list.is_empty(intents) {
+    "Find active peer agents you are authorised to contact. Returns peer ids you can pass to send_message."
+  } else {
+    str.join(["Find active peer agents you are authorised to contact for an intent. Intents: ", str.join(intents, ", "), ", coordination. Returns peer ids you can pass to send_message."], "")
+  }
+  [t.define("find_peers", find_desc, { title: "FindPeers", description: "Peer resolution by intent.", fields: [s.required_str("intent", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     let intent := match jv.get_field(args, "intent") {
       Some(JStr(sv)) => sv,
       _ => "coordination",
     }
-    let roles := intent_roles(intent)
+    let roles := resolver.roles_for(map, intent)
     let filtered := list.filter(peers, fn (pj :: jv.Json) -> Bool {
       role_matches(roles, pfield(pj, "role"))
     })
