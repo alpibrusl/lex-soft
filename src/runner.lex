@@ -28,10 +28,6 @@ import "std.process" as process
 
 import "lex-schema/json_value" as jv
 
-import "lex-schema/schema" as s
-
-import "lex-schema/error" as e
-
 import "lex-llm/src/tool" as t
 
 import "lex-agent/src/server" as srv
@@ -45,6 +41,8 @@ import "./trace" as trace
 import "./settlement" as settlement
 
 import "./relationships" as rel
+
+import "./resolver" as resolver
 
 import "./registry" as reg
 
@@ -63,7 +61,7 @@ type BackendRef = { key :: Str, url :: Str }
 # `backends` is a host-defined set of key→url pairs threaded through to the
 # subprocess so it can rebuild this agent's domain tools and run the tool loop.
 # The core treats them opaquely; only the host knows what a given key means.
-type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, backends :: List[BackendRef], tools :: List[t.Tool] }
+type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, backends :: List[BackendRef], intent_roles :: List[resolver.IntentRoles], tools :: List[t.Tool] }
 
 type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str, token :: Str }
 
@@ -214,22 +212,6 @@ fn load_peers(db :: Db, agent_id :: Str) -> [sql, fs_read] List[PeerInfo] {
   }
 }
 
-fn intent_roles(intent :: Str) -> List[Str] {
-  if intent == "charging" {
-    ["preferred_charger", "charger"]
-  } else {
-    if intent == "dispatch" {
-      ["contracted", "freelance"]
-    } else {
-      if intent == "reporting" {
-        ["reporting"]
-      } else {
-        []
-      }
-    }
-  }
-}
-
 fn load_state_backend(b :: Backend, agent_id :: Str) -> [sql, fs_read, net] Str {
   match b {
     BackendLocal(db) => state_store.load(db, agent_id),
@@ -266,65 +248,6 @@ fn find_peer_url(peers :: List[PeerInfo], to_id :: Str) -> Option[Str] {
   })
 }
 
-fn make_platform_tools_for_backend(b :: Backend, peers :: List[PeerInfo], agent_id :: Str) -> List[t.Tool] {
-  [t.define("find_peers", "Find active peers you are authorised to contact for a given intent. Intents: charging, dispatch, reporting, coordination.", { title: "FindPeers", description: "Peer resolution by intent.", fields: [s.required_str("intent", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
-    let intent := match jv.get_field(args, "intent") {
-      Some(JStr(sv)) => sv,
-      _ => "coordination",
-    }
-    let roles := intent_roles(intent)
-    let filtered := if list.len(roles) == 0 {
-      peers
-    } else {
-      list.filter(peers, fn (p :: PeerInfo) -> Bool {
-        list.fold(roles, false, fn (acc :: Bool, role :: Str) -> Bool {
-          acc or p.role == role
-        })
-      })
-    }
-    Ok(JList(list.map(filtered, fn (p :: PeerInfo) -> jv.Json {
-      JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name))])
-    })))
-  }), t.define("send_message", "Send a message to a peer agent. Use find_peers first to get valid peer IDs.", { title: "SendMessage", description: "Send a message to another agent.", fields: [s.required_str("to_id", []), s.required_str("topic", []), s.required_str("payload_json", [])] }, fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
-    let to_id := match jv.get_field(args, "to_id") {
-      Some(JStr(sv)) => sv,
-      _ => "",
-    }
-    let topic := match jv.get_field(args, "topic") {
-      Some(JStr(sv)) => sv,
-      _ => "",
-    }
-    let payload := match jv.get_field(args, "payload_json") {
-      Some(JStr(sv)) => sv,
-      _ => "{}",
-    }
-    if str.is_empty(to_id) {
-      Ok(JObj([("error", JStr("to_id is required"))]))
-    } else {
-      match b {
-        BackendLocal(_) => match find_peer_url(peers, to_id) {
-          None => Ok(JObj([("error", JStr(str.concat("agent not found: ", to_id)))])),
-          Some(peer_url) => {
-            let body_json := JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(topic)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(payload))])]))]))]))])
-            match http.post(peer_url, bytes.from_str(jv.stringify(body_json)), "application/json") {
-              Err(_) => Ok(JObj([("queued", JBool(false))])),
-              Ok(_) => Ok(JObj([("queued", JBool(true))])),
-            }
-          },
-        },
-        BackendRemote(rc) => {
-          let body := jv.stringify(JObj([("from", JStr(agent_id)), ("to", JStr(to_id)), ("topic", JStr(topic)), ("body", JStr(payload))]))
-          let url := str.concat(rc.client.url, "/v1/messages")
-          match http.post(url, bytes.from_str(body), "application/json") {
-            Err(_) => Ok(JObj([("queued", JBool(false))])),
-            Ok(_) => Ok(JObj([("queued", JBool(true))])),
-          }
-        },
-      }
-    }
-  })]
-}
-
 # Core handler — backend-agnostic. Both make_handler and make_handler_remote
 # delegate here.
 fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
@@ -340,7 +263,6 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     }
     let __t1 := trace.record(tdb, run_id, cfg.id, "received", text_in)
     let peers := take_peers(dedup_peers(load_peers_backend(b, cfg.id)), 50)
-    let _platform := make_platform_tools_for_backend(b, peers, cfg.id)
     let sys_base := build_system_prompt(cfg, state)
     let mem := trace.recall_facts_text(tdb, cfg.id, 8)
     let sys := if str.is_empty(mem) {
@@ -353,6 +275,10 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
       JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
     }))), ("backends", JObj(list.map(cfg.backends, fn (bk :: BackendRef) -> (Str, jv.Json) {
       (bk.key, JStr(bk.url))
+    }))), ("intent_roles", JList(list.map(cfg.intent_roles, fn (ir :: resolver.IntentRoles) -> jv.Json {
+      JObj([("intent", JStr(ir.intent)), ("roles", JList(list.map(ir.roles, fn (rl :: Str) -> jv.Json {
+        JStr(rl)
+      })))])
     })))]))
     let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")

@@ -47,7 +47,37 @@ import "std.str" as str
 
 import "./mesh" as mesh
 
+import "./resolver" as resolver
+
 import "./escalation" as escalation
+
+# Parse the host's intent→roles map out of the request JSON (serialized by the
+# caller's runner). Absent/malformed → empty map = find_peers matches any peer.
+fn parse_intent_map(j :: jv.Json) -> List[resolver.IntentRoles] {
+  match jv.get_field(j, "intent_roles") {
+    Some(JList(xs)) => list.fold(xs, [], fn (acc :: List[resolver.IntentRoles], item :: jv.Json) -> List[resolver.IntentRoles] {
+      let intent := match jv.get_field(item, "intent") {
+        Some(JStr(sv)) => sv,
+        _ => "",
+      }
+      let roles := match jv.get_field(item, "roles") {
+        Some(JList(rs)) => list.fold(rs, [], fn (racc :: List[Str], r :: jv.Json) -> List[Str] {
+          match r {
+            JStr(rv) => list.concat(racc, [rv]),
+            _ => racc,
+          }
+        }),
+        _ => [],
+      }
+      if str.is_empty(intent) {
+        acc
+      } else {
+        list.concat(acc, [{ intent: intent, roles: roles }])
+      }
+    }),
+    _ => [],
+  }
+}
 
 # Entry point: read the request file, build the agent from a caller tool factory,
 # run the loop, and print the {text, tools} result. `tool_factory` receives the
@@ -120,7 +150,7 @@ fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, ll
   } else {
     [escalation.make_escalate_tool(agent_id, gateway_url)]
   }
-  let tools := list.concat(list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers)), esc_tools)
+  let tools := list.concat(list.concat(tool_factory(j), mesh.make_mesh_tools(agent_id, peers, parse_intent_map(j))), esc_tools)
   let conv := list.concat(hist_msgs, [UserMsg(user)])
   let agent := ag.make_agent(agent_id, system, model_ref, provider, tools, ag.default_options())
   let steps := iter.to_list(ag.run_loop(agent, conv))
