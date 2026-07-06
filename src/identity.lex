@@ -3,7 +3,7 @@
 # Phase 6 (#59). Collapses the three fragmented identity models
 #   federation.issue_conn_token  (HS256, mesh dispatch)
 #   partner_auth.issue_token     (ed25519, partner public keys)
-#   lex-ev-api JWT               (tenant + module grants)
+#   a separate control-plane JWT (tenant + capability grants)
 # onto ONE chain, keyed on the `org` the registry already carries (#26):
 #
 #   customer account  →  issued agent credential  →  the credential both

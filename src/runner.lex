@@ -52,12 +52,18 @@ import "./platform/client" as pclient
 
 import "./outbox" as outbox
 
+# A backend service the agent's tools talk to, as an opaque key→url pair. The
+# core never interprets these — it only carries them through to the subprocess
+# (llm_call.lex) verbatim so the host can rebuild its own domain tools by key.
+# Keeps the core domain-agnostic: no product-specific URL fields (was lex-soft#5).
+type BackendRef = { key :: Str, url :: Str }
+
 # Configuration for an LLM-driven agent.
 #
-# The service URLs are threaded through to the subprocess (llm_call.lex) so it
-# can rebuild this agent's domain tools by kind and run the full tool loop.
-# Each agent kind populates only the URLs its tools use; the rest are empty.
-type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, tms_url :: Str, charge_url :: Str, telemetry_url :: Str, logistics_url :: Str, tools :: List[t.Tool] }
+# `backends` is a host-defined set of key→url pairs threaded through to the
+# subprocess so it can rebuild this agent's domain tools and run the tool loop.
+# The core treats them opaquely; only the host knows what a given key means.
+type AgentConfig = { id :: Str, kind :: Str, system_prompt :: Str, model_name :: Str, provider_name :: Str, provider_url :: Str, provider_key :: Str, backends :: List[BackendRef], tools :: List[t.Tool] }
 
 type PeerInfo = { id :: Str, kind :: Str, name :: Str, inbox_url :: Str, role :: Str, token :: Str }
 
@@ -345,7 +351,9 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let req_file := str.concat("/tmp/llm_", str.concat(cfg.id, ".json"))
     let req_json := jv.stringify(JObj([("provider", JStr(cfg.provider_name)), ("api_url", JStr(cfg.provider_url)), ("api_key", JStr(cfg.provider_key)), ("model", JStr(cfg.model_name)), ("system", JStr(sys)), ("user", JStr(text_in)), ("history", history), ("kind", JStr(cfg.kind)), ("agent_id", JStr(cfg.id)), ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
       JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
-    }))), ("tms_url", JStr(cfg.tms_url)), ("charge_url", JStr(cfg.charge_url)), ("telemetry_url", JStr(cfg.telemetry_url)), ("logistics_url", JStr(cfg.logistics_url))]))
+    }))), ("backends", JObj(list.map(cfg.backends, fn (bk :: BackendRef) -> (Str, jv.Json) {
+      (bk.key, JStr(bk.url))
+    })))]))
     let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
     let outcome := match process.run("sh", ["-c", shell_cmd]) {
