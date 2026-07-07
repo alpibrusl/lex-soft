@@ -1,0 +1,137 @@
+# tests/test_onboarding.lex — onboarding hardening (#62): rate limiting +
+# credential issuance through POST /connections.
+#
+# Two things must be true after #62: (1) a caller who floods POST /connections
+# from the same org gets rate-limited, not an ever-growing token supply; (2) a
+# successfully onboarded org's token is now audit-resolvable — it must have
+# been minted via identity.issue_credential (a `credentials` row exists), not
+# just a bare, unrecorded conn_token.issue.
+
+import "std.io" as io
+
+import "std.str" as str
+
+import "std.list" as list
+
+import "std.int" as int
+
+import "std.sql" as sql
+
+import "std.bytes" as bytes
+
+import "std.crypto" as crypto
+
+import "std.map" as map
+
+import "lex-schema/json_value" as jv
+
+import "lex-web/router" as router
+
+import "../src/migrate" as migrate
+
+import "../src/federation" as fed
+
+import "../src/identity" as identity
+
+fn demo_cfg() -> fed.FederationConfig {
+  { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false }
+}
+
+fn connect_req(org :: Str) -> jv.Json {
+  JObj([("org", JStr(org)), ("scope", JStr("logistics")), ("agents", JList([]))])
+}
+
+fn post_connect(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+  let req := { body: jv.stringify(connect_req(org)), method: "POST", path: "/connections", query: "", headers: map.new() }
+  let res := router.dispatch(r, req)
+  res.status
+}
+
+fn token_of(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Str {
+  let req := { body: jv.stringify(connect_req(org)), method: "POST", path: "/connections", query: "", headers: map.new() }
+  let res := router.dispatch(r, req)
+  match jv.parse(res.body) {
+    Err(_) => "",
+    Ok(j) => match jv.get_field(j, "token") {
+      Some(JStr(s)) => s,
+      _ => "",
+    },
+  }
+}
+
+# Onboarding an org mints a token that resolves to a real, audit-scoped
+# account/subject — not just a bare unrecorded JWT.
+fn onboarded_token_is_audit_resolvable() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let r := fed.mount_federation(router.new(), db, cfg)
+      let tok := token_of(r, "onboarded-org")
+      if str.is_empty(tok) {
+        Err("no token returned")
+      } else {
+        match identity.resolve_subject(db, cfg.secret, tok) {
+          Err(e) => Err(str.concat("resolve errored: ", e)),
+          Ok(None) => Err("onboarding token did not resolve to any credential — not audit-resolvable"),
+          Ok(Some(subj)) => if subj.org == "onboarded-org" {
+            Ok(())
+          } else {
+            Err(str.concat("resolved to wrong org: ", subj.org))
+          },
+        }
+      }
+    },
+  }
+}
+
+# Flooding POST /connections for the SAME org trips the rate limit (429) well
+# before an unbounded number of tokens could be minted; a DIFFERENT org is
+# unaffected (the limit is per-org, not global).
+fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let r := fed.mount_federation(router.new(), db, cfg)
+      let statuses := list.map(list.range(0, 25), fn (_n :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+        post_connect(r, "flooder-org")
+      })
+      let saw_429 := list.fold(statuses, false, fn (acc :: Bool, s :: Int) -> Bool {
+        acc or s == 429
+      })
+      if saw_429 {
+        let other_status := post_connect(r, "well-behaved-org")
+        if other_status == 200 {
+          Ok(())
+        } else {
+          Err(str.concat("a different org was also rate-limited: ", int.to_str(other_status)))
+        }
+      } else {
+        Err("flooding 25 requests never tripped the rate limit")
+      }
+    },
+  }
+}
+
+fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
+  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org()]
+  let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
+    match r {
+      Ok(_) => acc,
+      Err(m) => list.concat(acc, [m]),
+    }
+  })
+  if list.is_empty(failures) {
+    ()
+  } else {
+    let __show := list.fold(failures, (), fn (_a :: Unit, m :: Str) -> [io] Unit {
+      io.print(str.concat("FAIL: ", str.concat(m, "\n")))
+    })
+    let __boom := 1 / 0
+    ()
+  }
+}
+

@@ -34,8 +34,6 @@ import "std.crypto" as crypto
 
 import "std.time" as time
 
-import "lex-crypto/src/jwt" as jwt
-
 import "lex-crypto/src/ed25519" as ed
 
 import "lex-schema/json_value" as jv
@@ -59,6 +57,10 @@ import "./matchmaking" as mm
 import "./partner_auth" as pa
 
 import "./settlement" as settlement
+
+import "./conn_token" as conn_token
+
+import "./identity" as identity
 
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
@@ -96,27 +98,101 @@ fn sq(s :: Str) -> Str {
 }
 
 # ── Connection tokens (HS256) ─────────────────────────────────────────────────
-# Symmetric: we both issue and verify our own connection tokens, so HS256 is
-# correct. iss=us, sub=partner, aud=scope, exp=now+TTL.
+# Thin wrappers over conn_token.lex, kept here for API compatibility (external
+# code may call fed.issue_conn_token/verify_conn_token). The primitives moved
+# out to conn_token.lex so identity.lex can mint them without importing this
+# module — federation.lex needs to import identity.lex for #62.
 fn issue_conn_token(secret :: Bytes, our_org :: Str, partner_org :: Str, scope :: Str, ttl :: Int, jti :: Str, now :: Int) -> Str {
-  jwt.sign_hs256(secret, { sub: partner_org, iss: our_org, aud: scope, jti: jti, exp: now + ttl, nbf: 0, iat: now })
+  conn_token.issue(secret, our_org, partner_org, scope, ttl, jti, now)
 }
 
-# Inbound identity: a presented bearer token must be a JWT we signed and that has
-# not expired. Stateless — no DB lookup.
 fn verify_conn_token(secret :: Bytes, presented :: Str) -> [time] Bool {
-  if str.is_empty(presented) {
-    false
-  } else {
-    match jwt.verify_hs256(secret, presented) {
-      Ok(_) => true,
-      Err(_) => false,
-    }
-  }
+  conn_token.verify(secret, presented)
 }
 
 fn token_contract(token :: Str, org :: Str, scope :: Str) -> Str {
   jv.stringify(JObj([("org", JStr(org)), ("scope", JStr(scope)), ("token", JStr(token))]))
+}
+
+# ── Onboarding rate limit (#62) ────────────────────────────────────────────────
+# A best-effort, fixed-window guard on POST /connections: at most
+# `max_per_hour` onboarding attempts per requesting org per hour-bucket
+# (now_str's ISO date+hour prefix, e.g. "2026-07-07T07"). Not a security
+# boundary (an attacker can pick a new `org` value freely) — it exists to stop
+# a single misbehaving/looping caller from hammering credential issuance.
+fn max_per_hour() -> Int {
+  20
+}
+
+fn hour_bucket(now_str :: Str) -> Str {
+  str.slice(now_str, 0, 13)
+}
+
+# Bump this org's counter for the current hour and report whether it is still
+# within budget. Fails OPEN on a storage error — a rate-limit hiccup should not
+# block legitimate onboarding.
+fn rate_limited(db :: Db, req_org :: Str, now_str :: Str) -> [sql, fs_read, fs_write] Bool {
+  let w := hour_bucket(now_str)
+  let ins := str.join(["INSERT INTO connection_rate (org, window, count) VALUES ('", sq(req_org), "', '", sq(w), "', 1) ON CONFLICT(org, window) DO UPDATE SET count = count + 1"], "")
+  match sql.exec(db, ins, []) {
+    Err(_) => false,
+    Ok(_) => {
+      let sel := str.join(["SELECT count FROM connection_rate WHERE org='", sq(req_org), "' AND window='", sq(w), "'"], "")
+      let rows :: Result[List[{ count :: Int }], SqlError] := sql.query(db, sel, [])
+      match rows {
+        Err(_) => false,
+        Ok(rs) => match list.head(rs) {
+          None => false,
+          Some(r) => r.count > max_per_hour(),
+        },
+      }
+    },
+  }
+}
+
+fn rate_limited_response() -> resp.Response {
+  { status: 429, body: "{\"error\":\"too many onboarding attempts for this org this hour, try again later\"}", headers: map.from_list([("content-type", "application/json")]) }
+}
+
+# The body of POST /connections once the rate-limit gate passes: register the
+# onboarding org's agents, cache its partner key, and mint the connection token
+# AS AN AUDIT-RESOLVABLE CREDENTIAL (#62) — one identity.Account per org
+# (upserted, idempotent) and one identity.credentials row per issuance, so
+# GET /audit/events can later resolve this org's calls back to an account
+# (identity.resolve_subject). Falls back to a raw, unrecorded conn_token.issue
+# only if the credential bookkeeping insert itself fails — onboarding must not
+# hard-fail on that, but the fallback path is NOT audit-resolvable.
+fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str, j :: jv.Json, req_org :: Str) -> [sql, fs_read, fs_write, time, random] resp.Response {
+  let scope := jstr(j, "scope")
+  let link_from := jstr(j, "link_from")
+  let role := if str.is_empty(jstr(j, "role")) {
+    "peer"
+  } else {
+    jstr(j, "role")
+  }
+  let caller_token := jstr(j, "token")
+  let contract := token_contract(caller_token, req_org, scope)
+  let agents := match jv.get_field(j, "agents") {
+    Some(JList(xs)) => xs,
+    _ => [],
+  }
+  let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
+    register_peer_json(db, aj, link_from, role, contract)
+  })
+  let partner_key := jstr(j, "public_key")
+  let __pk := if str.is_empty(partner_key) {
+    Ok(())
+  } else {
+    pa.cache_key(db, req_org, partner_key)
+  }
+  let __acct := identity.create_account(db, req_org, req_org, req_org, "free")
+  let issued := match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
+    Ok(ic) => ic.token,
+    Err(_) => conn_token.issue(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now()),
+  }
+  resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
+    agentref_json(a, base)
+  })))])))
 }
 
 fn unauthorized_response() -> resp.Response {
@@ -449,32 +525,11 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
         let req_org := jstr(j, "org")
-        let scope := jstr(j, "scope")
-        let link_from := jstr(j, "link_from")
-        let role := if str.is_empty(jstr(j, "role")) {
-          "peer"
+        if rate_limited(db, req_org, time.now_str()) {
+          rate_limited_response()
         } else {
-          jstr(j, "role")
+          onboard_connection(db, cfg, org, base, j, req_org)
         }
-        let caller_token := jstr(j, "token")
-        let contract := token_contract(caller_token, req_org, scope)
-        let agents := match jv.get_field(j, "agents") {
-          Some(JList(xs)) => xs,
-          _ => [],
-        }
-        let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
-          register_peer_json(db, aj, link_from, role, contract)
-        })
-        let partner_key := jstr(j, "public_key")
-        let __pk := if str.is_empty(partner_key) {
-          Ok(())
-        } else {
-          pa.cache_key(db, req_org, partner_key)
-        }
-        let issued := issue_conn_token(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now())
-        resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
-          agentref_json(a, base)
-        })))])))
       },
     }
   })
