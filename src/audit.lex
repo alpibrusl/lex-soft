@@ -5,7 +5,8 @@
 # surface: a caller presents its agent credential (identity.lex), and only ever
 # sees the events belonging to its own org's agents — never another tenant's.
 #
-#   GET /audit/events[?agent=&kind=]   — this account's org's trail events
+#   GET /audit/events[?agent=&kind=&before_ts_ms=]        — this org's trail events
+#   GET /audit/interactions[?agent=&before_ts_ms=]        — per-run rollup + tamper check
 #
 # Scoping (Option A): an account owns an `org` (identity.Subject); the org owns
 # agents (registry #26, `tenant == org`); every trail event's payload carries the
@@ -20,6 +21,8 @@ import "std.str" as str
 
 import "std.list" as list
 
+import "std.int" as int
+
 import "lex-schema/json_value" as jv
 
 import "lex-web/router" as router
@@ -28,9 +31,15 @@ import "lex-web/ctx" as ctx
 
 import "lex-web/response" as resp
 
+import "lex-trail/kinds" as kinds
+
 import "./identity" as identity
 
 import "./registry" as reg
+
+import "lex-trail/log" as tlog
+
+import "./settlement" as settlement
 
 # A raw trail event row (mirrors lex-trail's events table columns).
 type EvRow = { id :: Str, kind :: Str, parent :: Option[Str], payload_json :: Str, ts_ms :: Int }
@@ -64,8 +73,15 @@ fn agent_where(ids :: List[Str]) -> Str {
   str.join(["(", str.join(parts, " OR "), ")"], "")
 }
 
-# Scoped, newest-first events for a set of agents, optionally filtered by kind.
-fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str) -> [sql, fs_read] List[EvRow] {
+# Page size for both /audit/events and /audit/interactions.
+fn page_size() -> Int {
+  100
+}
+
+# Scoped, newest-first events for a set of agents, optionally filtered by kind
+# and/or paged with a `before_ts_ms` cursor (strictly older than the cursor —
+# pass the previous page's oldest `ts_ms` to fetch the next page).
+fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :: Option[Int]) -> [sql, fs_read] List[EvRow] {
   if list.is_empty(ids) {
     []
   } else {
@@ -74,13 +90,73 @@ fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str) -> [sql, fs_read
     } else {
       str.join([" AND kind='", sq(kind_filter), "'"], "")
     }
-    let q := str.join(["SELECT id, kind, parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, " ORDER BY ts_ms DESC LIMIT 500"], "")
+    let cursor_clause := match before_ts_ms {
+      None => "",
+      Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
+    }
+    let q := str.join(["SELECT id, kind, parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
     let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
     match rows {
       Err(_) => [],
       Ok(rs) => rs,
     }
   }
+}
+
+fn parse_cursor(c :: ctx.Ctx) -> Option[Int] {
+  let raw := ctx.query_param_or(c, "before_ts_ms", "")
+  if str.is_empty(raw) {
+    None
+  } else {
+    str.to_int(raw)
+  }
+}
+
+# The cursor to pass as `before_ts_ms` to fetch the NEXT (older) page, or None
+# when this page was short of a full page (nothing older left to fetch).
+fn next_cursor(rows :: List[EvRow]) -> Option[Int] {
+  if list.len(rows) < page_size() {
+    None
+  } else {
+    match list.head(list.reverse(rows)) {
+      None => None,
+      Some(r) => Some(r.ts_ms),
+    }
+  }
+}
+
+# The agent ids to query for a request: the whole org, or a single ?agent=
+# that must actually belong to the org (else empty — never leaks another org's).
+fn scoped_ids(db :: Db, org :: Str, c :: ctx.Ctx) -> [sql, fs_read] List[Str] {
+  let all_ids := org_agent_ids(db, org)
+  let want := ctx.query_param_or(c, "agent", "")
+  if str.is_empty(want) {
+    all_ids
+  } else {
+    if in_set(all_ids, want) {
+      [want]
+    } else {
+      []
+    }
+  }
+}
+
+fn payload_field(payload_json :: Str, key :: Str) -> Str {
+  match jv.parse(payload_json) {
+    Err(_) => "",
+    Ok(j) => match jv.get_field(j, key) {
+      Some(JStr(s)) => s,
+      _ => "",
+    },
+  }
+}
+
+# One run's rollup: the tip (cap.completed) event plus a re-derived tamper
+# check (settlement.verify — intact + linked; no domain legal-spec here, that
+# stays in POST /verify since it needs a host-supplied CapSpec).
+fn interaction_json(log :: tlog.Log, t :: EvRow) -> [sql] jv.Json {
+  let valid := settlement.verify(log, t.id)
+  JObj([("trail_id", JStr(t.id)), ("agent", JStr(payload_field(t.payload_json, "agent"))), ("skill", JStr(payload_field(t.payload_json, "skill"))), ("result", JStr(payload_field(t.payload_json, "result"))), ("ts_ms", JInt(t.ts_ms)), ("valid", JBool(valid))])
 }
 
 fn ev_json(r :: EvRow) -> jv.Json {
@@ -104,19 +180,37 @@ fn events_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, ti
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => {
-        let all_ids := org_agent_ids(db, subj.org)
-        let want := ctx.query_param_or(c, "agent", "")
-        let ids := if str.is_empty(want) {
-          all_ids
-        } else {
-          if in_set(all_ids, want) {
-            [want]
-          } else {
-            []
-          }
+        let ids := scoped_ids(db, subj.org, c)
+        let rows := query_events(db, ids, ctx.query_param_or(c, "kind", ""), parse_cursor(c))
+        let cursor_j := match next_cursor(rows) {
+          None => JNull,
+          Some(ts) => JInt(ts),
         }
-        let rows := query_events(db, ids, ctx.query_param_or(c, "kind", ""))
-        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(rows))), ("events", JList(list.map(rows, ev_json)))])))
+        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(rows))), ("next_cursor", cursor_j), ("events", JList(list.map(rows, ev_json)))])))
+      },
+    },
+  }
+}
+
+# Same scoping as /audit/events, rolled up per run (one row per cap.completed
+# tip) with a re-derived tamper-evidence flag instead of the raw event triple.
+fn interactions_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+  match ctx.bearer_token(c) {
+    None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
+    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+      Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
+      Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
+      Ok(Some(subj)) => {
+        let ids := scoped_ids(db, subj.org, c)
+        let tips := query_events(db, ids, kinds.cap_completed(), parse_cursor(c))
+        let log := settlement.trail_on(db)
+        let cursor_j := match next_cursor(tips) {
+          None => JNull,
+          Some(ts) => JInt(ts),
+        }
+        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(tips))), ("next_cursor", cursor_j), ("interactions", JList(list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
+          interaction_json(log, t)
+        })))])))
       },
     },
   }
@@ -125,8 +219,11 @@ fn events_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, ti
 # Host opt-in: mount the tenant-scoped audit routes. `secret` is the same
 # federation secret credentials were issued under (identity.resolve_subject).
 fn mount(r :: router.Router, db :: Db, secret :: Bytes) -> router.Router {
-  router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     events_response(db, secret, c)
+  })
+  router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    interactions_response(db, secret, c)
   })
 }
 
