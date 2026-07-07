@@ -94,6 +94,31 @@ fn ddl_connection_rate() -> Str {
   "CREATE TABLE IF NOT EXISTS connection_rate (org TEXT NOT NULL, window TEXT NOT NULL, count BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (org, window))"
 }
 
+# Notification bus (#64): per-account delivery channels + an outbox. A serve
+# handler ENQUEUES (sql only); a sidecar delivers (outbound http, like the
+# scheduler). Channels are account-scoped so a customer only ever configures
+# and sees its own; each notification carries its account so delivery can look
+# up that account's channels and /notifications can scope by the credential.
+fn ddl_notify_channels() -> Str {
+  "CREATE TABLE IF NOT EXISTS notify_channels (id TEXT PRIMARY KEY, account TEXT NOT NULL, ctype TEXT NOT NULL DEFAULT 'webhook', target TEXT NOT NULL, active BIGINT NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
+}
+
+fn ddl_notify_channels_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_notify_channels_account ON notify_channels(account, active)"
+}
+
+fn ddl_notifications() -> Str {
+  "CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, account TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts BIGINT NOT NULL DEFAULT 0, response_code BIGINT NOT NULL DEFAULT 0, created_at TEXT NOT NULL, delivered_at TEXT NOT NULL DEFAULT '')"
+}
+
+fn ddl_notifications_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(status, created_at)"
+}
+
+fn ddl_notifications_acct_idx() -> Str {
+  "CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account, created_at)"
+}
+
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, stmt, []) {
     Err(e) => Err(e.message),
@@ -139,6 +164,11 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __credi := exec_ddl_tolerant(db, ddl_credentials_jti_idx())
                 let __credai := exec_ddl_tolerant(db, ddl_credentials_account_idx())
                 let __connrate := exec_ddl_tolerant(db, ddl_connection_rate())
+                let __nchan := exec_ddl_tolerant(db, ddl_notify_channels())
+                let __nchani := exec_ddl_tolerant(db, ddl_notify_channels_idx())
+                let __notif := exec_ddl_tolerant(db, ddl_notifications())
+                let __notifi := exec_ddl_tolerant(db, ddl_notifications_idx())
+                let __notifai := exec_ddl_tolerant(db, ddl_notifications_acct_idx())
                 jobs.init_schema(db)
               },
             },

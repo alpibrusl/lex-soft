@@ -64,6 +64,8 @@ import "./identity" as identity
 
 import "./metering" as metering
 
+import "./notifications" as notifications
+
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
 #   base         public base URL of this deployment
@@ -184,6 +186,7 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
     _ => false,
   }
   if over_quota {
+    let __notify := notifications.enqueue(db, req_org, "quota.breach", str.join(["{\"org\":\"", sq(req_org), "\",\"plan\":\"", sq(plan), "\"}"], ""))
     quota_exceeded_response()
   } else {
     let scope := jstr(j, "scope")
