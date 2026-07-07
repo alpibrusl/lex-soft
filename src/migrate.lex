@@ -87,6 +87,13 @@ fn ddl_credentials_account_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_credentials_account ON credentials(account)"
 }
 
+# Onboarding rate limit (#62): a fixed-window (hour-bucket) counter per
+# requesting org, bumped on every POST /connections. Best-effort protection,
+# not a security boundary — see federation.rate_limited.
+fn ddl_connection_rate() -> Str {
+  "CREATE TABLE IF NOT EXISTS connection_rate (org TEXT NOT NULL, window TEXT NOT NULL, count BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (org, window))"
+}
+
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, stmt, []) {
     Err(e) => Err(e.message),
@@ -131,6 +138,7 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __cred := exec_ddl_tolerant(db, ddl_credentials())
                 let __credi := exec_ddl_tolerant(db, ddl_credentials_jti_idx())
                 let __credai := exec_ddl_tolerant(db, ddl_credentials_account_idx())
+                let __connrate := exec_ddl_tolerant(db, ddl_connection_rate())
                 jobs.init_schema(db)
               },
             },

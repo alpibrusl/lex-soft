@@ -1,7 +1,7 @@
 # identity.lex — unified account / credential model for the platform control plane.
 #
 # Phase 6 (#59). Collapses the three fragmented identity models
-#   federation.issue_conn_token  (HS256, mesh dispatch)
+#   conn_token.issue              (HS256, mesh dispatch)
 #   partner_auth.issue_token     (ed25519, partner public keys)
 #   a separate control-plane JWT (tenant + capability grants)
 # onto ONE chain, keyed on the `org` the registry already carries (#26):
@@ -30,7 +30,7 @@ import "std.crypto" as crypto
 
 import "lex-crypto/src/jwt" as jwt
 
-import "./federation" as fed
+import "./conn_token" as conn_token
 
 # The control-plane principal. `org` is the mesh/registry join key (#26); one
 # account owns exactly one org. `plan` drives quotas (#61); `status` gates login.
@@ -108,7 +108,7 @@ fn cred_cols() -> Str {
 # (becomes the token's `sub`, i.e. the mesh-visible identity).
 fn issue_credential(db :: Db, secret :: Bytes, our_org :: Str, account :: Str, org :: Str, agent_id :: Str, scope :: Str, ttl :: Int) -> [sql, fs_write, time, random] Result[IssuedCredential, Str] {
   let jti := str.concat("cred_", crypto.random_str_hex(16))
-  let token := fed.issue_conn_token(secret, our_org, org, scope, ttl, jti, time.now())
+  let token := conn_token.issue(secret, our_org, org, scope, ttl, jti, time.now())
   let cred_id := str.concat("cr_", crypto.random_str_hex(8))
   let now_s := time.now_str()
   let q := str.join(["INSERT INTO credentials (id, account, org, agent_id, scope, jti, revoked, created_at) VALUES ('", sq(cred_id), "', '", sq(account), "', '", sq(org), "', '", sq(agent_id), "', '", sq(scope), "', '", sq(jti), "', 0, '", now_s, "')"], "")
@@ -147,7 +147,7 @@ fn revoke_credential(db :: Db, cred_id :: Str) -> [sql, fs_write] Result[Unit, S
 # ── The audit-subject resolver ────────────────────────────────────────────────
 #
 # Given a presented bearer token: (1) verify it is a conn token we signed and
-# that has not expired (stateless, same check as federation.verify_conn_token),
+# that has not expired (stateless, same check as conn_token.verify),
 # then (2) look up its jti in the credentials table. A token that verifies but
 # whose credential is missing or revoked resolves to None — so revocation is
 # immediate and authoritative, independent of the token's own (still-valid) exp.
