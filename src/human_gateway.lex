@@ -57,6 +57,12 @@ import "lex-trail/log" as tlog
 
 import "./settlement" as settlement
 
+import "./registry" as reg
+
+import "./identity" as identity
+
+import "./notifications" as notifications
+
 type Approval = { id :: Str, from_agent :: Str, question :: Str, kind :: Str, detail :: Str, status :: Str, decision :: Str, decided_by :: Str, signature :: Str, created_at :: Str, decided_at :: Str }
 
 fn sq(s :: Str) -> Str {
@@ -83,8 +89,20 @@ fn head_parent(log :: tlog.Log) -> [sql] Option[Str] {
   }
 }
 
+# The account that owns an agent (agent → its tenant/org → account). "" if the
+# agent isn't registered or its org has no account — best-effort, never fatal.
+fn account_for_agent(db :: Db, agent_id :: Str) -> [sql, fs_read] Str {
+  match reg.find_by_id(db, agent_id) {
+    Ok(Some(a)) => match identity.account_by_org(db, a.tenant) {
+      Ok(Some(acct)) => acct.id,
+      _ => "",
+    },
+    _ => "",
+  }
+}
+
 # Record a new escalation. Returns the approval id the requester will cite.
-fn request(db :: Db, from_agent :: Str, question :: Str, kind :: Str, detail :: Str) -> [sql, fs_write, random, time] Result[Str, Str] {
+fn request(db :: Db, from_agent :: Str, question :: Str, kind :: Str, detail :: Str) -> [sql, fs_read, fs_write, random, time] Result[Str, Str] {
   let id := crypto.random_str_hex(16)
   let now := time.now_str()
   let q := str.join(["INSERT INTO approvals (id, from_agent, question, kind, detail, status, created_at) VALUES ('", id, "', '", sq(from_agent), "', '", sq(question), "', '", sq(kind), "', '", sq(detail), "', 'pending', '", now, "')"], "")
@@ -94,6 +112,12 @@ fn request(db :: Db, from_agent :: Str, question :: Str, kind :: Str, detail :: 
       let log := settlement.trail_on(db)
       let payload := jv.stringify(JObj([("approval_id", JStr(id)), ("from_agent", JStr(from_agent)), ("kind", JStr(kind))]))
       let __t := tlog.append(log, "escalation.requested", head_parent(log), payload)
+      let acct := account_for_agent(db, from_agent)
+      let __n := if str.is_empty(acct) {
+        ""
+      } else {
+        notifications.enqueue(db, acct, "escalation.raised", payload)
+      }
       Ok(id)
     },
   }
