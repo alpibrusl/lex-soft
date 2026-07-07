@@ -65,10 +65,15 @@ fn in_set(ids :: List[Str], want :: Str) -> Bool {
   })
 }
 
-# (payload_json LIKE '%"agent":"a1"%' OR …) — matches events acted by any of ids.
+# (payload_json LIKE '%"agent":"a1"%' OR …) — matches events acted by any of
+# ids. Checks BOTH `"agent"` (settlement/arm events) and `"from_agent"`
+# (escalation.requested — human_gateway.request uses that key, not "agent")
+# so an org's escalations aren't silently invisible to its own audit/usage
+# queries. Fixed here rather than left as a #60 follow-up since #61's usage
+# counters depend on it being correct.
 fn agent_where(ids :: List[Str]) -> Str {
   let parts := list.map(ids, fn (id :: Str) -> Str {
-    str.join(["payload_json LIKE '%\"agent\":\"", sq(id), "\"%'"], "")
+    str.join(["(payload_json LIKE '%\"agent\":\"", sq(id), "\"%' OR payload_json LIKE '%\"from_agent\":\"", sq(id), "\"%')"], "")
   })
   str.join(["(", str.join(parts, " OR "), ")"], "")
 }

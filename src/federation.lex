@@ -62,6 +62,8 @@ import "./conn_token" as conn_token
 
 import "./identity" as identity
 
+import "./metering" as metering
+
 # Per-deployment federation configuration. Supplied by the host (a domain pack's
 # boot); the core derives nothing from the environment itself.
 #   base         public base URL of this deployment
@@ -162,37 +164,65 @@ fn rate_limited_response() -> resp.Response {
 # (identity.resolve_subject). Falls back to a raw, unrecorded conn_token.issue
 # only if the credential bookkeeping insert itself fails — onboarding must not
 # hard-fail on that, but the fallback path is NOT audit-resolvable.
+fn quota_exceeded_response() -> resp.Response {
+  { status: 403, body: "{\"error\":\"this org's plan quota is exhausted — cannot onboard more agents until usage resets or the plan is upgraded\"}", headers: map.from_list([("content-type", "application/json")]) }
+}
+
+# Look up the org's EXISTING account (if any) without touching it — used to
+# decide both the quota check and whether to create a fresh account, so a
+# repeat onboarding call never clobbers a plan that was upgraded out-of-band
+# (identity.create_account's upsert always overwrites `plan`, so calling it
+# unconditionally here would silently downgrade an upgraded org back to free).
 fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str, j :: jv.Json, req_org :: Str) -> [sql, fs_read, fs_write, time, random] resp.Response {
-  let scope := jstr(j, "scope")
-  let link_from := jstr(j, "link_from")
-  let role := if str.is_empty(jstr(j, "role")) {
-    "peer"
+  let existing := identity.get_account(db, req_org)
+  let plan := match existing {
+    Ok(Some(a)) => a.plan,
+    _ => "free",
+  }
+  let over_quota := match existing {
+    Ok(Some(_)) => metering.over_quota(db, req_org, plan),
+    _ => false,
+  }
+  if over_quota {
+    quota_exceeded_response()
   } else {
-    jstr(j, "role")
+    let scope := jstr(j, "scope")
+    let link_from := jstr(j, "link_from")
+    let role := if str.is_empty(jstr(j, "role")) {
+      "peer"
+    } else {
+      jstr(j, "role")
+    }
+    let caller_token := jstr(j, "token")
+    let contract := token_contract(caller_token, req_org, scope)
+    let agents := match jv.get_field(j, "agents") {
+      Some(JList(xs)) => xs,
+      _ => [],
+    }
+    let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
+      register_peer_json(db, aj, link_from, role, contract)
+    })
+    let partner_key := jstr(j, "public_key")
+    let __pk := if str.is_empty(partner_key) {
+      Ok(())
+    } else {
+      pa.cache_key(db, req_org, partner_key)
+    }
+    let __acct := match existing {
+      Ok(Some(_)) => (),
+      _ => {
+        let __c := identity.create_account(db, req_org, req_org, req_org, "free")
+        ()
+      },
+    }
+    let issued := match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
+      Ok(ic) => ic.token,
+      Err(_) => conn_token.issue(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now()),
+    }
+    resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
+      agentref_json(a, base)
+    })))])))
   }
-  let caller_token := jstr(j, "token")
-  let contract := token_contract(caller_token, req_org, scope)
-  let agents := match jv.get_field(j, "agents") {
-    Some(JList(xs)) => xs,
-    _ => [],
-  }
-  let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
-    register_peer_json(db, aj, link_from, role, contract)
-  })
-  let partner_key := jstr(j, "public_key")
-  let __pk := if str.is_empty(partner_key) {
-    Ok(())
-  } else {
-    pa.cache_key(db, req_org, partner_key)
-  }
-  let __acct := identity.create_account(db, req_org, req_org, req_org, "free")
-  let issued := match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
-    Ok(ic) => ic.token,
-    Err(_) => conn_token.issue(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now()),
-  }
-  resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
-    agentref_json(a, base)
-  })))])))
 }
 
 fn unauthorized_response() -> resp.Response {
