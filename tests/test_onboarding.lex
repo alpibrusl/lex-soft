@@ -116,8 +116,39 @@ fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, f
   }
 }
 
+# Re-onboarding an org that was previously upgraded to "pro" must NOT clobber
+# its plan back to "free" (identity.create_account's upsert always overwrites
+# `plan`, so onboard_connection must only create-with-"free" for a brand-new
+# account, never for one that already exists).
+fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let r := fed.mount_federation(router.new(), db, cfg)
+      let __first := post_connect(r, "upgraded-org")
+      match identity.create_account(db, "upgraded-org", "upgraded-org", "upgraded-org", "pro") {
+        Err(e) => Err(str.concat("upgrade failed: ", e)),
+        Ok(_) => {
+          let __second := post_connect(r, "upgraded-org")
+          match identity.get_account(db, "upgraded-org") {
+            Err(e) => Err(str.concat("get_account failed: ", e)),
+            Ok(None) => Err("account vanished after re-onboarding"),
+            Ok(Some(a)) => if a.plan == "pro" {
+              Ok(())
+            } else {
+              Err(str.concat("plan was clobbered on re-onboarding: ", a.plan))
+            },
+          }
+        },
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org()]
+  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

@@ -25,6 +25,8 @@ import "../src/settlement" as settlement
 
 import "../src/audit" as audit
 
+import "../src/human_gateway" as hg
+
 fn contains_agent(rows :: List[audit.EvRow], agent :: Str) -> Bool {
   list.fold(rows, false, fn (acc :: Bool, r :: audit.EvRow) -> Bool {
     acc or str.contains(r.payload_json, str.join(["\"agent\":\"", agent, "\""], ""))
@@ -136,8 +138,32 @@ fn interactions_rollup_and_isolation() -> [sql, fs_read, fs_write, time] Result[
   }
 }
 
+# Regression: escalation.requested payloads carry "from_agent", not "agent" —
+# agent_where must match that key too, or an org's own escalations are
+# invisible to its own audit query.
+fn escalation_events_are_visible_to_their_own_org() -> [sql, fs_read, fs_write, time, random] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __s := setup(db)
+      let __schema := hg.init(db)
+      match hg.request(db, "agent-a1", "may I proceed?", "spend", "{}") {
+        Err(e) => Err(str.concat("hg.request failed: ", e)),
+        Ok(_) => {
+          let rows := audit.query_events(db, audit.org_agent_ids(db, "org-a"), "escalation.requested", None)
+          if list.len(rows) == 1 {
+            Ok(())
+          } else {
+            Err(str.concat("expected 1 escalation.requested event visible to org-a, got ", int.to_str(list.len(rows))))
+          }
+        },
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [org_sees_only_its_own(), org_b_isolated(), unknown_org_sees_nothing(), interactions_rollup_and_isolation()]
+  let results := [org_sees_only_its_own(), org_b_isolated(), unknown_org_sees_nothing(), interactions_rollup_and_isolation(), escalation_events_are_visible_to_their_own_org()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
