@@ -33,6 +33,8 @@ import "../src/federation" as fed
 
 import "../src/identity" as identity
 
+import "../src/audit" as audit
+
 fn demo_cfg() -> fed.FederationConfig {
   { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false }
 }
@@ -147,8 +149,44 @@ fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, 
   }
 }
 
+# An agent onboarded via POST /connections must land in ITS ORG's tenant (not
+# the "default" tenant), so per-org discovery / audit / usage include it. This
+# is the fix for the scoping gap: register_peer_json now uses register_in(org).
+fn onboarded_agent_lands_in_its_org_tenant() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let r := fed.mount_federation(router.new(), db, demo_cfg())
+      let body := jv.stringify(JObj([("org", JStr("beta-corp")), ("scope", JStr("logistics")), ("agents", JList([JObj([("id", JStr("beta-agent-1")), ("kind", JStr("truck")), ("inbox_url", JStr("http://beta/agent-1/")), ("capabilities", JList([JStr("transport")]))])]))]))
+      let __res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
+      let beta_ids := audit.org_agent_ids(db, "beta-corp")
+      let in_beta := list.fold(beta_ids, false, fn (acc :: Bool, id :: Str) -> Bool {
+        acc or id == "beta-agent-1"
+      })
+      let default_ids := audit.org_agent_ids(db, "default")
+      let in_default := list.fold(default_ids, false, fn (acc :: Bool, id :: Str) -> Bool {
+        acc or id == "beta-agent-1"
+      })
+      if in_beta and not in_default {
+        Ok(())
+      } else {
+        Err(str.concat("agent tenant wrong: in_beta=", str.concat(bool_s(in_beta), str.concat(" in_default=", bool_s(in_default)))))
+      }
+    },
+  }
+}
+
+fn bool_s(b :: Bool) -> Str {
+  if b {
+    "true"
+  } else {
+    "false"
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan()]
+  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan(), onboarded_agent_lands_in_its_org_tenant()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
