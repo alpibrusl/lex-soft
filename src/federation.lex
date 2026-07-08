@@ -203,7 +203,7 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
       _ => [],
     }
     let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
-      register_peer_json(db, aj, link_from, role, contract)
+      register_peer_json(db, aj, req_org, link_from, role, contract)
     })
     let partner_key := jstr(j, "public_key")
     let __pk := if str.is_empty(partner_key) {
@@ -287,7 +287,11 @@ fn registry_refs(db :: Db) -> [sql, fs_read] List[reg.AgentRef] {
 # Register one agent (from a JSON object {id,kind,name,inbox_url,capabilities})
 # into the local registry, optionally adding a relationship edge so `link_from`
 # may call it. The shared effector behind POST /peers and POST /connections.
-fn register_peer_json(db :: Db, aj :: jv.Json, link_from :: Str, role :: Str, contract :: Str) -> [sql, fs_write, time, random] Unit {
+# `tenant` scopes the agent to its owning org (the #26 multi-tenant boundary) so
+# per-org discovery / audit / usage (which key off `agent.tenant == org`) include
+# it. Empty tenant falls back to "default" — preserves the pre-tenant behaviour
+# for any caller that doesn't supply an org.
+fn register_peer_json(db :: Db, aj :: jv.Json, tenant :: Str, link_from :: Str, role :: Str, contract :: Str) -> [sql, fs_write, time, random] Unit {
   let id := jstr(aj, "id")
   if str.is_empty(id) {
     ()
@@ -304,7 +308,12 @@ fn register_peer_json(db :: Db, aj :: jv.Json, link_from :: Str, role :: Str, co
     }
     let inbox_url := jstr(aj, "inbox_url")
     let caps := json_str_list(aj, "capabilities")
-    match reg.register(db, id, kind, name, inbox_url, caps) {
+    let t := if str.is_empty(tenant) {
+      "default"
+    } else {
+      tenant
+    }
+    match reg.register_in(db, t, id, kind, name, inbox_url, caps) {
       Err(_) => (),
       Ok(_) => if str.is_empty(link_from) {
         ()
@@ -546,7 +555,7 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
           if str.is_empty(inbox_url) {
             resp.bad_request("{\"error\":\"inbox_url is required\"}")
           } else {
-            let __r := register_peer_json(db, j, jstr(j, "from_agent"), jstr(j, "role"), token_contract(jstr(j, "token"), "", ""))
+            let __r := register_peer_json(db, j, jstr(j, "org"), jstr(j, "from_agent"), jstr(j, "role"), token_contract(jstr(j, "token"), "", ""))
             resp.json(str.concat("{\"ok\":true,\"peer\":", str.concat(jv.stringify(JStr(id)), "}")))
           }
         }
