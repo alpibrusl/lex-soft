@@ -270,8 +270,12 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     } else {
       str.concat(sys_base, str.concat("\n\nDurable memory (facts you have remembered, honor them):\n", mem))
     }
+    let agent_tenant := match reg.find_by_id(trace_db(b), cfg.id) {
+      Ok(Some(a)) => a.tenant,
+      _ => "",
+    }
     let req_file := str.concat("/tmp/llm_", str.concat(cfg.id, ".json"))
-    let req_json := jv.stringify(JObj([("provider", JStr(cfg.provider_name)), ("api_url", JStr(cfg.provider_url)), ("api_key", JStr(cfg.provider_key)), ("model", JStr(cfg.model_name)), ("system", JStr(sys)), ("user", JStr(text_in)), ("history", history), ("kind", JStr(cfg.kind)), ("agent_id", JStr(cfg.id)), ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
+    let req_json := jv.stringify(JObj([("provider", JStr(cfg.provider_name)), ("api_url", JStr(cfg.provider_url)), ("api_key", JStr(cfg.provider_key)), ("model", JStr(cfg.model_name)), ("system", JStr(sys)), ("user", JStr(text_in)), ("history", history), ("kind", JStr(cfg.kind)), ("agent_id", JStr(cfg.id)), ("tenant", JStr(agent_tenant)), ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
       JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
     }))), ("backends", JObj(list.map(cfg.backends, fn (bk :: BackendRef) -> (Str, jv.Json) {
       (bk.key, JStr(bk.url))
