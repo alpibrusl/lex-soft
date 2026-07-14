@@ -62,6 +62,8 @@ import "./conn_token" as conn_token
 
 import "./identity" as identity
 
+import "./trust" as trust
+
 import "./metering" as metering
 
 import "./notifications" as notifications
@@ -197,7 +199,13 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
       jstr(j, "role")
     }
     let caller_token := jstr(j, "token")
-    let contract := token_contract(caller_token, req_org, scope)
+    let contract0 := token_contract(caller_token, req_org, scope)
+    let level := jstr(j, "trust_level")
+    let contract := if str.is_empty(level) {
+      contract0
+    } else {
+      trust.with_level(contract0, level)
+    }
     let agents := match jv.get_field(j, "agents") {
       Some(JList(xs)) => xs,
       _ => [],
@@ -555,7 +563,14 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
           if str.is_empty(inbox_url) {
             resp.bad_request("{\"error\":\"inbox_url is required\"}")
           } else {
-            let __r := register_peer_json(db, j, jstr(j, "org"), jstr(j, "from_agent"), jstr(j, "role"), token_contract(jstr(j, "token"), "", ""))
+            let peer_contract0 := token_contract(jstr(j, "token"), "", "")
+            let peer_level := jstr(j, "trust_level")
+            let peer_contract := if str.is_empty(peer_level) {
+              peer_contract0
+            } else {
+              trust.with_level(peer_contract0, peer_level)
+            }
+            let __r := register_peer_json(db, j, jstr(j, "org"), jstr(j, "from_agent"), jstr(j, "role"), peer_contract)
             resp.json(str.concat("{\"ok\":true,\"peer\":", str.concat(jv.stringify(JStr(id)), "}")))
           }
         }
