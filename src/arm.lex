@@ -38,6 +38,8 @@ import "./registry" as reg
 
 import "./relationships" as rel
 
+import "./trust" as trust
+
 import "./trace" as trace
 
 import "./settlement" as settlement
@@ -194,7 +196,7 @@ fn profile_json(db :: Db, log :: tlog.Log, cp :: Str) -> [sql, fs_read, time] St
   }
   let rels := match rel.peers_of(db, cp) {
     Ok(rs) => JList(list.map(rs, fn (r :: rel.Relationship) -> jv.Json {
-      JObj([("to", JStr(r.to_agent)), ("role", JStr(r.role)), ("contract", JStr(r.contract_json))])
+      JObj([("to", JStr(r.to_agent)), ("role", JStr(r.role)), ("trust_level", JStr(trust.level_of(r.contract_json))), ("contract", JStr(r.contract_json))])
     })),
     Err(_) => JList([]),
   }

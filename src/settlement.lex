@@ -33,6 +33,18 @@ fn trail_on(db :: Db) -> [sql] tlog.Log {
 
 # Record a run's hash-chained trail; returns the content-addressed trail_id
 # (the tip event's id), or "" if the trail could not be written.
+# L1 internal market (trust ladder): a metered exchange between two agents of
+# the SAME account, settled by accounting rather than payment. One trail
+# event per charge; `ref` must be unique per charge (an invoice line, a CDR
+# id) — identical payloads content-hash-dedup to one event.
+fn record_chargeback(log :: tlog.Log, from_agent :: Str, to_agent :: Str, amount :: Float, currency :: Str, ref :: Str) -> [sql, time] Result[Str, Str] {
+  let payload := jv.stringify(JObj([("agent", JStr(from_agent)), ("from_agent", JStr(from_agent)), ("to_agent", JStr(to_agent)), ("amount", JFloat(amount)), ("currency", JStr(currency)), ("ref", JStr(ref))]))
+  match tlog.append(log, "settlement.chargeback", None, payload) {
+    Err(e) => Err(e),
+    Ok(ev) => Ok(ev.id),
+  }
+}
+
 fn record_run(log :: tlog.Log, agent :: Str, skill :: Str, input :: Str, answer :: Str, tools :: List[Str]) -> [sql, time] Str {
   let recv := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("input", JStr(input))]))
   match tlog.append(log, kinds.a2a_task_received(), None, recv) {

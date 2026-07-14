@@ -41,7 +41,7 @@ import "./identity" as identity
 
 import "./audit" as audit
 
-type Usage = { tasks :: Int, escalations :: Int, spend_total :: Int, spend_denied :: Int }
+type Usage = { tasks :: Int, escalations :: Int, spend_total :: Int, spend_denied :: Int, chargeback_count :: Int, chargeback_total :: Float }
 
 fn escalation_requested_kind() -> Str {
   "escalation.requested"
@@ -90,6 +90,34 @@ fn spend_amount(payload_json :: Str) -> Int {
 # arm.spend rows for an org (uncapped scan — spend volume is expected to be far
 # lower than task volume; revisit with the same before_ts_ms cursor as #60 if
 # that assumption stops holding).
+fn chargeback_kind() -> Str {
+  "settlement.chargeback"
+}
+
+fn chargeback_amount(payload_json :: Str) -> Float {
+  match jv.parse(payload_json) {
+    Err(_) => 0.0,
+    Ok(j) => match jv.get_field(j, "amount") {
+      Some(JFloat(f)) => f,
+      Some(JInt(n)) => int.to_float(n),
+      _ => 0.0,
+    },
+  }
+}
+
+fn chargeback_rows(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[{ payload_json :: Str }] {
+  if list.is_empty(ids) {
+    []
+  } else {
+    let q := str.join(["SELECT payload_json FROM events WHERE ", audit.agent_where(ids), " AND kind='", audit.sq(chargeback_kind()), "'"], "")
+    let rows :: Result[List[{ payload_json :: Str }], SqlError] := sql.query(db, q, [])
+    match rows {
+      Err(_) => [],
+      Ok(rs) => rs,
+    }
+  }
+}
+
 fn spend_rows(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[{ payload_json :: Str }] {
   if list.is_empty(ids) {
     []
@@ -120,7 +148,11 @@ fn usage_for(db :: Db, org :: Str) -> [sql, fs_read] Usage {
       acc + 1
     }
   })
-  { tasks: count_kind(db, ids, kinds.cap_completed()), escalations: count_kind(db, ids, escalation_requested_kind()), spend_total: approved_total, spend_denied: denied_count }
+  let cbs := chargeback_rows(db, ids)
+  let cb_total := list.fold(cbs, 0.0, fn (acc :: Float, r :: { payload_json :: Str }) -> Float {
+    acc + chargeback_amount(r.payload_json)
+  })
+  { tasks: count_kind(db, ids, kinds.cap_completed()), escalations: count_kind(db, ids, escalation_requested_kind()), spend_total: approved_total, spend_denied: denied_count, chargeback_count: list.len(cbs), chargeback_total: cb_total }
 }
 
 # ── Plan quotas ────────────────────────────────────────────────────────────────
@@ -144,7 +176,7 @@ fn over_quota(db :: Db, org :: Str, plan :: Str) -> [sql, fs_read] Bool {
 }
 
 fn usage_json(u :: Usage) -> jv.Json {
-  JObj([("tasks", JInt(u.tasks)), ("escalations", JInt(u.escalations)), ("spend_total", JInt(u.spend_total)), ("spend_denied", JInt(u.spend_denied))])
+  JObj([("tasks", JInt(u.tasks)), ("escalations", JInt(u.escalations)), ("spend_total", JInt(u.spend_total)), ("spend_denied", JInt(u.spend_denied)), ("chargebacks", JObj([("count", JInt(u.chargeback_count)), ("total", JFloat(u.chargeback_total))]))])
 }
 
 fn usage_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
