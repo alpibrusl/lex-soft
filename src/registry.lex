@@ -67,6 +67,52 @@ fn heartbeat(db :: Db, id :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   }
 }
 
+# ── Pooled agents: pre-mounted personas a customer claims at onboarding ──────
+# A pooled row is invisible to discovery (kind lookups filter status='active',
+# the full catalog filters status != 'pooled') and sits in a host-chosen
+# holding tenant until claimed. Re-registration of an EXISTING row is a no-op,
+# so a claimed agent is never downgraded back to the pool on reboot.
+fn register_pooled(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
+  let caps_json := jv.stringify(JList(list.map(capabilities, fn (cap :: Str) -> jv.Json {
+    JStr(cap)
+  })))
+  let now := time.now_str()
+  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'pooled', '", sq(tenant), "', '", now, "', '", now, "') ON CONFLICT(id) DO NOTHING"], "")
+  match sql.exec(db, q, []) {
+    Err(e) => Err(e.message),
+    Ok(_) => Ok(()),
+  }
+}
+
+# Claim up to `count` pooled agents of a kind for `new_tenant`. Returns the
+# claimed ids (possibly fewer than asked — the pool may be short). A non-empty
+# display_name renames the claimed agents "<display_name> <n>".
+fn claim_pooled(db :: Db, kind :: Str, count :: Int, new_tenant :: Str, display_name :: Str) -> [sql, fs_read, fs_write, time] Result[List[Str], Str] {
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE status='pooled' AND kind='", sq(kind), "' ORDER BY id LIMIT ", int.to_str(count)], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  match rows {
+    Err(e) => Err(e.message),
+    Ok(rs) => {
+      let now := time.now_str()
+      let ids := list.map(list.enumerate(rs), fn (p :: (Int, AgentRow)) -> [sql, fs_write] Str {
+        match p {
+          (i, r) => {
+            let name := if str.is_empty(display_name) {
+              r.name
+            } else {
+              str.join([display_name, " ", int.to_str(i + 1)], "")
+            }
+            let uq := str.join(["UPDATE agents SET tenant='", sq(new_tenant), "', status='active', name='", sq(name), "', last_seen_at='", now, "' WHERE id='", sq(r.id), "' AND status='pooled'"], "")
+            let __u := sql.exec(db, uq, [])
+            r.id
+          },
+        }
+      })
+      Ok(ids)
+    },
+  }
+}
+
 fn set_status(db :: Db, id :: Str, status :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
   let q := str.join(["UPDATE agents SET status='", sq(status), "', last_seen_at='", now, "' WHERE id='", sq(id), "'"], "")
@@ -100,7 +146,7 @@ fn find_by_kind(db :: Db, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], 
 }
 
 fn list_all(db :: Db) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents ORDER BY kind, name"], "")
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE status != 'pooled' ORDER BY kind, name"], "")
   let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
   match rows {
     Err(e) => Err(e.message),
