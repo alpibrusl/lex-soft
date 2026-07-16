@@ -31,6 +31,8 @@ import "std.int" as int
 
 import "lex-schema/json_value" as jv
 
+import "lex-money/src/decimal" as mdec
+
 import "lex-web/router" as router
 
 import "lex-web/ctx" as ctx
@@ -43,7 +45,7 @@ import "./identity" as identity
 
 import "./audit" as audit
 
-type Usage = { tasks :: Int, escalations :: Int, spend_total :: Int, spend_denied :: Int, chargeback_count :: Int, chargeback_total :: Float }
+type Usage = { tasks :: Int, escalations :: Int, spend_total :: Int, spend_denied :: Int, chargeback_count :: Int, chargeback_total :: Float, chargeback_total_dec :: Str }
 
 fn escalation_requested_kind() -> Str {
   "escalation.requested"
@@ -96,6 +98,14 @@ fn chargeback_kind() -> Str {
   "settlement.chargeback"
 }
 
+fn pow10_f(exp :: Int) -> Float {
+  if exp >= 0 {
+    int.to_float(mdec.pow10(exp))
+  } else {
+    1.0 / int.to_float(mdec.pow10(0 - exp))
+  }
+}
+
 fn chargeback_amount(payload_json :: Str) -> Float {
   match jv.parse(payload_json) {
     Err(_) => 0.0,
@@ -103,6 +113,18 @@ fn chargeback_amount(payload_json :: Str) -> Float {
       Some(JFloat(f)) => f,
       Some(JInt(n)) => int.to_float(n),
       _ => 0.0,
+    },
+  }
+}
+
+# Exact amount when the event carries one (settlement.record_chargeback_dec
+# stamps amount_dec); legacy float-only events fall back to the float sum.
+fn chargeback_amount_dec(payload_json :: Str) -> Option[mdec.Decimal] {
+  match jv.parse(payload_json) {
+    Err(_) => None,
+    Ok(j) => match jv.get_field(j, "amount_dec") {
+      Some(JStr(s)) => mdec.parse(s),
+      _ => None,
     },
   }
 }
@@ -151,10 +173,21 @@ fn usage_for(db :: Db, org :: Str) -> [sql, fs_read] Usage {
     }
   })
   let cbs := chargeback_rows(db, ids)
-  let cb_total := list.fold(cbs, 0.0, fn (acc :: Float, r :: { payload_json :: Str }) -> Float {
-    acc + chargeback_amount(r.payload_json)
+  let cb_exact := list.fold(cbs, mdec.zero(), fn (acc :: mdec.Decimal, r :: { payload_json :: Str }) -> mdec.Decimal {
+    match chargeback_amount_dec(r.payload_json) {
+      Some(d) => mdec.add(acc, d),
+      None => acc,
+    }
   })
-  { tasks: count_kind(db, ids, kinds.cap_completed()), escalations: count_kind(db, ids, escalation_requested_kind()), spend_total: approved_total, spend_denied: denied_count, chargeback_count: list.len(cbs), chargeback_total: cb_total }
+  let cb_legacy := list.fold(cbs, 0.0, fn (acc :: Float, r :: { payload_json :: Str }) -> Float {
+    match chargeback_amount_dec(r.payload_json) {
+      Some(_) => acc,
+      None => acc + chargeback_amount(r.payload_json),
+    }
+  })
+  let exact_norm := mdec.normalize(cb_exact)
+  let exact_f := int.to_float(exact_norm.coefficient) * pow10_f(exact_norm.exponent)
+  { tasks: count_kind(db, ids, kinds.cap_completed()), escalations: count_kind(db, ids, escalation_requested_kind()), spend_total: approved_total, spend_denied: denied_count, chargeback_count: list.len(cbs), chargeback_total: exact_f + cb_legacy, chargeback_total_dec: mdec.to_str(cb_exact) }
 }
 
 # ── Plan quotas ────────────────────────────────────────────────────────────────
@@ -178,7 +211,7 @@ fn over_quota(db :: Db, org :: Str, plan :: Str) -> [sql, fs_read] Bool {
 }
 
 fn usage_json(u :: Usage) -> jv.Json {
-  JObj([("tasks", JInt(u.tasks)), ("escalations", JInt(u.escalations)), ("spend_total", JInt(u.spend_total)), ("spend_denied", JInt(u.spend_denied)), ("chargebacks", JObj([("count", JInt(u.chargeback_count)), ("total", JFloat(u.chargeback_total))]))])
+  JObj([("tasks", JInt(u.tasks)), ("escalations", JInt(u.escalations)), ("spend_total", JInt(u.spend_total)), ("spend_denied", JInt(u.spend_denied)), ("chargebacks", JObj([("count", JInt(u.chargeback_count)), ("total", JFloat(u.chargeback_total)), ("total_dec", JStr(u.chargeback_total_dec))]))])
 }
 
 # A plan's commercial terms — HOST-SUPPLIED data (the core knows the shape,

@@ -87,8 +87,41 @@ fn higher_plan_raises_the_ceiling() -> [sql, fs_read, fs_write, time] Result[Uni
   }
 }
 
+
+# Float-hostile amounts (0.10 + 0.20) must sum to exactly "0.30" through the
+# amount_dec path; a malformed amount is an Err, never a silent zero.
+fn exact_chargebacks_sum_exactly() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __s := setup_with_n_tasks(db, "org-x", "agent-x1", 1)
+      let log := settlement.trail_on(db)
+      let r1 := settlement.record_chargeback_dec(log, "agent-x1", "peer", "0.10", "EUR", "cb-x-1")
+      let r2 := settlement.record_chargeback_dec(log, "agent-x1", "peer", "0.20", "EUR", "cb-x-2")
+      let bad := settlement.record_chargeback_dec(log, "agent-x1", "peer", "1,50", "EUR", "cb-x-3")
+      let both_ok := match r1 {
+        Ok(_) => match r2 {
+          Ok(_) => true,
+          Err(_) => false,
+        },
+        Err(_) => false,
+      }
+      let bad_rejected := match bad {
+        Err(_) => true,
+        Ok(_) => false,
+      }
+      let u := metering.usage_for(db, "org-x")
+      if both_ok and bad_rejected and u.chargeback_count == 2 and u.chargeback_total_dec == "0.30" {
+        Ok(())
+      } else {
+        Err(str.concat("exact sum wrong: count=", str.concat(int.to_str(u.chargeback_count), str.concat(" total_dec=", u.chargeback_total_dec))))
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [usage_counts_tasks(), over_quota_trips_at_the_plan_ceiling(), higher_plan_raises_the_ceiling()]
+  let results := [usage_counts_tasks(), over_quota_trips_at_the_plan_ceiling(), higher_plan_raises_the_ceiling(), exact_chargebacks_sum_exactly()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

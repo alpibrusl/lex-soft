@@ -19,6 +19,14 @@ import "lex-schema/json_value" as jv
 
 import "lex-trail/log" as tlog
 
+import "lex-money/src/decimal" as mdec
+
+import "lex-money/src/money" as money
+
+import "lex-money/src/currency" as mcur
+
+import "lex-money/src/rounding" as mround
+
 import "lex-trail/replay" as replay
 
 import "lex-trail/export" as txport
@@ -42,6 +50,30 @@ fn record_chargeback(log :: tlog.Log, from_agent :: Str, to_agent :: Str, amount
   match tlog.append(log, "settlement.chargeback", None, payload) {
     Err(e) => Err(e),
     Ok(ev) => Ok(ev.id),
+  }
+}
+
+# Exact-decimal chargeback (lex-soft#57): the amount arrives as a STRING,
+# is validated and canonicalized to the currency's minor units via lex-money
+# (HalfUp), and the payload carries BOTH amount_dec (the canonical string —
+# authoritative) and amount (a float derived once, for legacy consumers).
+# A malformed amount is an Err, never a silent 0.
+fn record_chargeback_dec(log :: tlog.Log, from_agent :: Str, to_agent :: Str, amount_str :: Str, currency_code :: Str, ref :: Str) -> [sql, time] Result[Str, Str] {
+  let cur := match mcur.from_code(currency_code) {
+    Some(c) => c,
+    None => mcur.Unknown(currency_code),
+  }
+  match money.parse(amount_str, cur, mround.HalfUp(())) {
+    None => Err(str.concat("invalid decimal amount: ", amount_str)),
+    Some(m) => {
+      let canonical := money.format(m)
+      let approx := int.to_float(m.amount) / int.to_float(mdec.pow10(0 - m.exponent))
+      let payload := jv.stringify(JObj([("agent", JStr(from_agent)), ("from_agent", JStr(from_agent)), ("to_agent", JStr(to_agent)), ("amount_dec", JStr(canonical)), ("amount", JFloat(approx)), ("currency", JStr(currency_code)), ("ref", JStr(ref))]))
+      match tlog.append(log, "settlement.chargeback", None, payload) {
+        Err(e) => Err(e),
+        Ok(ev) => Ok(ev.id),
+      }
+    },
   }
 }
 
