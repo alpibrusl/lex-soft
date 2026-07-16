@@ -91,7 +91,7 @@ fn ddl_credentials_account_idx() -> Str {
 # requesting org, bumped on every POST /connections. Best-effort protection,
 # not a security boundary — see federation.rate_limited.
 fn ddl_connection_rate() -> Str {
-  "CREATE TABLE IF NOT EXISTS connection_rate (org TEXT NOT NULL, window TEXT NOT NULL, count BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (org, window))"
+  "CREATE TABLE IF NOT EXISTS connection_rate (org TEXT NOT NULL, \"window\" TEXT NOT NULL, count BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (org, \"window\"))"
 }
 
 # Notification bus (#64): per-account delivery channels + an outbox. A serve

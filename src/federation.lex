@@ -139,11 +139,11 @@ fn hour_bucket(now_str :: Str) -> Str {
 # block legitimate onboarding.
 fn rate_limited(db :: Db, req_org :: Str, now_str :: Str) -> [sql, fs_read, fs_write] Bool {
   let w := hour_bucket(now_str)
-  let ins := str.join(["INSERT INTO connection_rate (org, window, count) VALUES ('", sq(req_org), "', '", sq(w), "', 1) ON CONFLICT(org, window) DO UPDATE SET count = count + 1"], "")
+  let ins := str.join(["INSERT INTO connection_rate (org, \"window\", count) VALUES ('", sq(req_org), "', '", sq(w), "', 1) ON CONFLICT(org, \"window\") DO UPDATE SET count = connection_rate.count + 1"], "")
   match sql.exec(db, ins, []) {
     Err(_) => false,
     Ok(_) => {
-      let sel := str.join(["SELECT count FROM connection_rate WHERE org='", sq(req_org), "' AND window='", sq(w), "'"], "")
+      let sel := str.join(["SELECT count FROM connection_rate WHERE org='", sq(req_org), "' AND \"window\"='", sq(w), "'"], "")
       let rows :: Result[List[{ count :: Int }], SqlError] := sql.query(db, sel, [])
       match rows {
         Err(_) => false,
