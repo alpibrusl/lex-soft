@@ -59,7 +59,19 @@ fn recent_exchanges(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
 # oldest-first — fed to the LLM as real prior conversation turns. Prior empty/
 # error agent responses (start with '[') are filtered out.
 fn recent_messages_json(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
-  let q := str.join(["SELECT j FROM (SELECT json_object('role', CASE event_kind WHEN 'received' THEN 'user' ELSE 'agent' END, 'text', substr(data_json, 1, 800)) AS j, ts FROM traces WHERE agent_id = '", sq(agent_id), "' AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
+  recent_messages_json_for(db, agent_id, "", n)
+}
+
+# History scoped to ONE conversation (#46): when ctx is non-empty only that
+# conversation's turns are replayed. An empty ctx keeps the old agent-global
+# behavior — the transport supplied no contextId, so there is nothing better.
+fn recent_messages_json_for(db :: Db, agent_id :: Str, ctx :: Str, n :: Int) -> [sql] Str {
+  let ctx_clause := if str.is_empty(ctx) {
+    ""
+  } else {
+    str.join([" AND run_id = '", sq(ctx), "'"], "")
+  }
+  let q := str.join(["SELECT j FROM (SELECT json_object('role', CASE event_kind WHEN 'received' THEN 'user' ELSE 'agent' END, 'text', substr(data_json, 1, 800)) AS j, ts FROM traces WHERE agent_id = '", sq(agent_id), "'", ctx_clause, " AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
   match sql.query(db, q, []) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
