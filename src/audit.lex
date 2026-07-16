@@ -42,7 +42,7 @@ import "lex-trail/log" as tlog
 import "./settlement" as settlement
 
 # A raw trail event row (mirrors lex-trail's events table columns).
-type EvRow = { id :: Str, kind :: Str, parent :: Option[Str], payload_json :: Str, ts_ms :: Int }
+type EvRow = { id :: Str, kind :: Str, parent :: Str, payload_json :: Str, ts_ms :: Int }
 
 fn sq(s :: Str) -> Str {
   str.replace(s, "'", "''")
@@ -99,7 +99,7 @@ fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :: 
       None => "",
       Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
     }
-    let q := str.join(["SELECT id, kind, parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
+    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
     let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
     match rows {
       Err(_) => [],
@@ -169,9 +169,10 @@ fn ev_json(r :: EvRow) -> jv.Json {
     Ok(j) => j,
     Err(_) => JStr(r.payload_json),
   }
-  let parent_j := match r.parent {
-    Some(p) => JStr(p),
-    None => JNull,
+  let parent_j := if str.is_empty(r.parent) {
+    JNull
+  } else {
+    JStr(r.parent)
   }
   JObj([("id", JStr(r.id)), ("kind", JStr(r.kind)), ("parent", parent_j), ("ts_ms", JInt(r.ts_ms)), ("payload", payload)])
 }
