@@ -66,6 +66,22 @@ fn peer_field_for(peers :: List[jv.Json], to_id :: Str, field :: Str) -> Str {
 
 # POST an A2A tasks/send to `url`, attaching `Authorization: Bearer <token>` when
 # a connection token is present (so the peer can authenticate the caller).
+fn send_body(agent_id :: Str, to_id :: Str, skill :: Str, payload :: Str) -> jv.Json {
+  JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(skill)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(payload))])]))]))]))])
+}
+
+# A JSON-RPC "unknown skill" bounce, spotted in the peer's raw reply. Topic
+# names come from an LLM, and a near-miss ("Handle", a capability id, a made-up
+# verb) should not kill the conversation — the caller retries against the
+# peer's DEFAULT skill (empty skill = first advertised), which every A2A serve
+# resolves.
+fn is_unknown_skill(reply :: jv.Json) -> Bool {
+  match jv.get_field(reply, "reply_raw") {
+    Some(JStr(raw)) => str.contains(raw, "unknown skill"),
+    _ => false,
+  }
+}
+
 fn post_a2a(url :: Str, token :: Str, body :: Str) -> [net, io, proc] Result[jv.Json, e.Errors] {
   let base := { method: "POST", url: url, headers: map.new(), body: Some(bytes.from_str(body)), timeout_ms: Some(60000) }
   let with_ct := http.with_header(base, "Content-Type", "application/json")
@@ -130,8 +146,15 @@ fn make_mesh_tools(agent_id :: Str, peers :: List[jv.Json], map :: List[resolver
         Ok(JObj([("error", JStr(str.concat("unknown or unauthorised peer: ", to_id)))]))
       } else {
         let token := peer_field_for(peers, to_id, "token")
-        let body_json := JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(topic)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(payload))])]))]))]))])
-        post_a2a(url, token, jv.stringify(body_json))
+        let first := post_a2a(url, token, jv.stringify(send_body(agent_id, to_id, str.trim(topic), payload)))
+        match first {
+          Err(err) => Err(err),
+          Ok(reply) => if is_unknown_skill(reply) and not str.is_empty(str.trim(topic)) {
+            post_a2a(url, token, jv.stringify(send_body(agent_id, to_id, "", payload)))
+          } else {
+            Ok(reply)
+          },
+        }
       }
     }
   })]
