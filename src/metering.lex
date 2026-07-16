@@ -27,6 +27,8 @@ import "std.str" as str
 
 import "std.list" as list
 
+import "std.int" as int
+
 import "lex-schema/json_value" as jv
 
 import "lex-web/router" as router
@@ -179,7 +181,30 @@ fn usage_json(u :: Usage) -> jv.Json {
   JObj([("tasks", JInt(u.tasks)), ("escalations", JInt(u.escalations)), ("spend_total", JInt(u.spend_total)), ("spend_denied", JInt(u.spend_denied)), ("chargebacks", JObj([("count", JInt(u.chargeback_count)), ("total", JFloat(u.chargeback_total))]))])
 }
 
-fn usage_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+# A plan's commercial terms — HOST-SUPPLIED data (the core knows the shape,
+# never the prices): base subscription, included tasks, and the overage rate
+# beyond them. An empty catalog keeps /usage exactly as before.
+type PlanPrice = { plan :: Str, base_eur_month :: Float, included_tasks :: Int, overage_eur_task :: Float }
+
+fn price_for(catalog :: List[PlanPrice], plan :: Str) -> Option[PlanPrice] {
+  list.head(list.filter(catalog, fn (p :: PlanPrice) -> Bool {
+    p.plan == plan
+  }))
+}
+
+# Billing preview over the SAME counters the customer can audit. Honest about
+# the MVP window: counters are all-time until accounts get a billing anchor.
+fn billing_json(p :: PlanPrice, tasks :: Int) -> jv.Json {
+  let over := if tasks > p.included_tasks {
+    tasks - p.included_tasks
+  } else {
+    0
+  }
+  let overage_eur := int.to_float(over) * p.overage_eur_task
+  JObj([("plan", JStr(p.plan)), ("base_eur_month", JFloat(p.base_eur_month)), ("included_tasks", JInt(p.included_tasks)), ("tasks_used", JInt(tasks)), ("overage_tasks", JInt(over)), ("overage_eur_task", JFloat(p.overage_eur_task)), ("overage_eur", JFloat(overage_eur)), ("estimated_eur_month", JFloat(p.base_eur_month + overage_eur)), ("period", JStr("all_time_mvp"))])
+}
+
+fn usage_response(db :: Db, secret :: Bytes, catalog :: List[PlanPrice], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
     Some(tok) => match identity.resolve_subject(db, secret, tok) {
@@ -191,17 +216,23 @@ fn usage_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, tim
           _ => "free",
         }
         let u := usage_for(db, subj.org)
-        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("plan", JStr(plan)), ("plan_limit_tasks", JInt(plan_limit(plan))), ("usage", usage_json(u))])))
+        let base := [("org", JStr(subj.org)), ("account", JStr(subj.account)), ("plan", JStr(plan)), ("plan_limit_tasks", JInt(plan_limit(plan))), ("usage", usage_json(u))]
+        let fields := match price_for(catalog, plan) {
+          None => base,
+          Some(p) => list.concat(base, [("billing_preview", billing_json(p, u.tasks))]),
+        }
+        resp.json(jv.stringify(JObj(fields)))
       },
     },
   }
 }
 
 # Host opt-in: mount GET /usage. `secret` is the same federation secret
-# credentials are issued under (identity.resolve_subject).
-fn mount(r :: router.Router, db :: Db, secret :: Bytes) -> router.Router {
+# credentials are issued under (identity.resolve_subject). `catalog` carries
+# the host's commercial terms per plan — pass [] for counters-only.
+fn mount(r :: router.Router, db :: Db, secret :: Bytes, catalog :: List[PlanPrice]) -> router.Router {
   router.route_effectful(r, "GET", "/usage", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    usage_response(db, secret, c)
+    usage_response(db, secret, catalog, c)
   })
 }
 
