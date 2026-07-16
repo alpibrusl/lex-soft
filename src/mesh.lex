@@ -66,8 +66,13 @@ fn peer_field_for(peers :: List[jv.Json], to_id :: Str, field :: Str) -> Str {
 
 # POST an A2A tasks/send to `url`, attaching `Authorization: Bearer <token>` when
 # a connection token is present (so the peer can authenticate the caller).
+# The text is prefixed with the SENDER's id: a peer otherwise has no idea who
+# is talking to it (A2A tasks/send carries no from-field), and downstream acts
+# — settlements, bookings, replies — need the real counterparty id, not one
+# the receiving model invents.
 fn send_body(agent_id :: Str, to_id :: Str, skill :: Str, payload :: Str) -> jv.Json {
-  JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(skill)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(payload))])]))]))]))])
+  let stamped := str.join(["[from agent ", agent_id, "] ", payload], "")
+  JObj([("jsonrpc", JStr("2.0")), ("id", JStr("1")), ("method", JStr("tasks/send")), ("params", JObj([("id", JStr(str.concat("msg-", to_id))), ("contextId", JStr(str.concat("ctx-", agent_id))), ("skill", JStr(skill)), ("message", JObj([("role", JStr("user")), ("parts", JList([JObj([("type", JStr("text")), ("text", JStr(stamped))])]))]))]))])
 }
 
 # A JSON-RPC "unknown skill" bounce, spotted in the peer's raw reply. Topic
