@@ -37,12 +37,16 @@ import "lex-orm/connection" as conn
 
 # Wrap an existing db as a trail log (idempotent schema init).
 #
-# DIALECT: lex-soft hands the trail a raw `Db` it opened itself, so the
-# dialect has to be stated here. It is SQLite-shaped today, which matches
-# every lex-soft deployment that opens a file/:memory: database. A Postgres
-# host must call trail_on_dialect(db, DbPostgres(())) instead — the trail's
-# parameterized statements bind `?` on SQLite and `$n` on PG, and nothing can
-# infer that from a bare handle (lex-trail#8 / #18).
+# DIALECT (#62): lex-soft opens its own database and passes a bare `Db`, so it
+# cannot know whether that handle is SQLite or Postgres — it tags the trail
+# SQLite. That tag is a LABEL, not a constraint: verified against Postgres 16,
+# std.sql accepts BOTH `?` and `$n` placeholders (the driver normalizes them),
+# and the trail's DDL and ON CONFLICT are portable. A lex-soft node on a
+# postgres:// DB_PATH writes its trail correctly today.
+#
+# It only becomes load-bearing if lex-trail grows dialect-SENSITIVE SQL (a
+# uuid cast marker, say). Then pass the real one via trail_on_dialect, or move
+# this package to a lex-orm ConnDb so the dialect is known at open.
 fn trail_on(db :: Db) -> [sql] tlog.Log {
   trail_on_dialect(db, DbSqlite(()))
 }
