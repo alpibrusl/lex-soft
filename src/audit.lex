@@ -41,6 +41,8 @@ import "lex-trail/log" as tlog
 
 import "./settlement" as settlement
 
+import "lex-crypto/src/ed25519" as ed
+
 # A raw trail event row (mirrors lex-trail's events table columns).
 type EvRow = { id :: Str, kind :: Str, parent :: Str, payload_json :: Str, ts_ms :: Int }
 
@@ -100,6 +102,30 @@ fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :: 
       Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
     }
     let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
+    let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
+    match rows {
+      Err(_) => [],
+      Ok(rs) => rs,
+    }
+  }
+}
+
+# Like query_events but with a caller-chosen cap (the export wants one big
+# page, not the interactive page size).
+fn collect_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :: Option[Int], cap :: Int) -> [sql, fs_read] List[EvRow] {
+  if list.is_empty(ids) {
+    []
+  } else {
+    let kind_clause := if str.is_empty(kind_filter) {
+      ""
+    } else {
+      str.join([" AND kind='", sq(kind_filter), "'"], "")
+    }
+    let cursor_clause := match before_ts_ms {
+      None => "",
+      Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
+    }
+    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(cap)], "")
     let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
     match rows {
       Err(_) => [],
@@ -224,12 +250,60 @@ fn interactions_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_re
 
 # Host opt-in: mount the tenant-scoped audit routes. `secret` is the same
 # federation secret credentials were issued under (identity.resolve_subject).
+# The export body: everything the tenant can already read, in one document —
+# events (full page set up to the cap) + the interactions rollup — plus the
+# export metadata. The SIGNATURE is Ed25519 over the sha256 of the canonical
+# body with the DEPLOYMENT seed (the notification-webhook pattern), so any
+# third party can verify the archive against /.well-known/agent-key.json
+# without trusting the transport it arrived over.
+fn export_cap() -> Int {
+  2000
+}
+
+fn export_response(db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+  match ctx.bearer_token(c) {
+    None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
+    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+      Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
+      Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
+      Ok(Some(subj)) => {
+        let ids := scoped_ids(db, subj.org, c)
+        let events := collect_events(db, ids, "", None, export_cap())
+        let tips := collect_events(db, ids, kinds.cap_completed(), None, export_cap())
+        let log := settlement.trail_on(db)
+        let interactions := list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
+          interaction_json(log, t)
+        })
+        let body := jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("exported_at_ms", JInt(time.now_ms())), ("event_count", JInt(list.len(events))), ("truncated", JBool(list.len(events) >= export_cap())), ("events", JList(list.map(events, ev_json))), ("interactions", JList(interactions))]))
+        let digest := crypto.hex_encode(crypto.sha256(bytes.from_str(body)))
+        let sig := match ed.sign_text(sign_seed, digest) {
+          Ok(s) => s,
+          Err(_) => "",
+        }
+        if str.is_empty(sig) {
+          resp.json_status(500, "{\"error\":\"export signing failed\"}")
+        } else {
+          resp.json(jv.stringify(JObj([("archive", JStr(body)), ("sha256", JStr(digest)), ("alg", JStr("ed25519")), ("signature", JStr(sig)), ("public_key", JStr(pub_b64))])))
+        }
+      },
+    },
+  }
+}
+
 fn mount(r :: router.Router, db :: Db, secret :: Bytes) -> router.Router {
   let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     events_response(db, secret, c)
   })
   router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     interactions_response(db, secret, c)
+  })
+}
+
+# Host opt-in for the signed archive (#48): needs the deployment signing seed
+# and its published key, which plain mount() deliberately doesn't take.
+fn mount_export(r :: router.Router, db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
+  router.route_effectful(r, "POST", "/audit/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    export_response(db, secret, sign_seed, pub_b64, c)
   })
 }
 
