@@ -33,10 +33,26 @@ import "lex-trail/export" as txport
 
 import "lex-trail/kinds" as kinds
 
+import "lex-orm/connection" as conn
+
 # Wrap an existing db as a trail log (idempotent schema init).
+#
+# DIALECT: lex-soft hands the trail a raw `Db` it opened itself, so the
+# dialect has to be stated here. It is SQLite-shaped today, which matches
+# every lex-soft deployment that opens a file/:memory: database. A Postgres
+# host must call trail_on_dialect(db, DbPostgres(())) instead — the trail's
+# parameterized statements bind `?` on SQLite and `$n` on PG, and nothing can
+# infer that from a bare handle (lex-trail#8 / #18).
 fn trail_on(db :: Db) -> [sql] tlog.Log {
-  let __i := tlog.init_schema(db)
-  { db: db }
+  trail_on_dialect(db, DbSqlite(()))
+}
+
+# Same, for a host that knows its database is Postgres.
+fn trail_on_dialect(db :: Db, dialect :: conn.Dialect) -> [sql] tlog.Log {
+  match tlog.attach(db, dialect) {
+    Ok(l) => l,
+    Err(_) => { db: { dialect: dialect, handle: db } },
+  }
 }
 
 # Record a run's hash-chained trail; returns the content-addressed trail_id

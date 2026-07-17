@@ -15,6 +15,7 @@ lex-llm    = { git = "https://github.com/alpibrusl/lex-llm" }
 lex-agent  = { git = "https://github.com/alpibrusl/lex-agent" }
 lex-crypto = { git = "https://github.com/alpibrusl/lex-crypto" }
 lex-trail  = { git = "https://github.com/alpibrusl/lex-trail" }
+lex-orm    = { git = "https://github.com/alpibrusl/lex-orm" }
 lex-money  = { git = "https://github.com/alpibrusl/lex-money" }
 lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
 lex-guard  = { git = "https://github.com/alpibrusl/lex-guard" }
