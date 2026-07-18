@@ -99,10 +99,6 @@ fn json_str_list(j :: jv.Json, key :: Str) -> List[Str] {
   }
 }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 # ── Connection tokens (HS256) ─────────────────────────────────────────────────
 # Thin wrappers over conn_token.lex, kept here for API compatibility (external
 # code may call fed.issue_conn_token/verify_conn_token). The primitives moved
@@ -139,12 +135,12 @@ fn hour_bucket(now_str :: Str) -> Str {
 # block legitimate onboarding.
 fn rate_limited(db :: Db, req_org :: Str, now_str :: Str) -> [sql, fs_read, fs_write] Bool {
   let w := hour_bucket(now_str)
-  let ins := str.join(["INSERT INTO connection_rate (org, \"window\", count) VALUES ('", sq(req_org), "', '", sq(w), "', 1) ON CONFLICT(org, \"window\") DO UPDATE SET count = connection_rate.count + 1"], "")
-  match sql.exec(db, ins, []) {
+  let ins := "INSERT INTO connection_rate (org, \"window\", count) VALUES (?, ?, 1) ON CONFLICT(org, \"window\") DO UPDATE SET count = connection_rate.count + 1"
+  match sql.exec(db, ins, [PStr(req_org), PStr(w)]) {
     Err(_) => false,
     Ok(_) => {
-      let sel := str.join(["SELECT count FROM connection_rate WHERE org='", sq(req_org), "' AND \"window\"='", sq(w), "'"], "")
-      let rows :: Result[List[{ count :: Int }], SqlError] := sql.query(db, sel, [])
+      let sel := "SELECT count FROM connection_rate WHERE org=? AND \"window\"=?"
+      let rows :: Result[List[{ count :: Int }], SqlError] := sql.query(db, sel, [PStr(req_org), PStr(w)])
       match rows {
         Err(_) => false,
         Ok(rs) => match list.head(rs) {
@@ -188,7 +184,7 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
     _ => false,
   }
   if over_quota {
-    let __notify := notifications.enqueue(db, req_org, "quota.breach", str.join(["{\"org\":\"", sq(req_org), "\",\"plan\":\"", sq(plan), "\"}"], ""))
+    let __notify := notifications.enqueue(db, req_org, "quota.breach", jv.stringify(JObj([("org", JStr(req_org)), ("plan", JStr(plan))])))
     quota_exceeded_response()
   } else {
     let scope := jstr(j, "scope")
@@ -488,8 +484,8 @@ fn index_catalog(db :: Db, org :: Str, catalog_url :: Str, public_key :: Str, ca
     JStr(c)
   })))
   let now := time.now_str()
-  let q := str.join(["INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES ('", sq(org), "', '", sq(catalog_url), "', '", sq(caps_json), "', '", sq(public_key), "', '", now, "') ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"
+  match sql.exec(db, q, [PStr(org), PStr(catalog_url), PStr(caps_json), PStr(public_key), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -607,8 +603,8 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
               _ => "[]",
             }
             let now := time.now_str()
-            let q := str.join(["INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES ('", sq(d_org), "', '", sq(catalog_url), "', '", sq(caps_json), "', '", sq(jstr(j, "public_key")), "', '", now, "') ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"], "")
-            match sql.exec(db, q, []) {
+            let q := "INSERT INTO org_directory (org, catalog_url, capabilities, public_key, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(org) DO UPDATE SET catalog_url=excluded.catalog_url, capabilities=excluded.capabilities, public_key=excluded.public_key, updated_at=excluded.updated_at"
+            match sql.exec(db, q, [PStr(d_org), PStr(catalog_url), PStr(caps_json), PStr(jstr(j, "public_key")), PStr(now)]) {
               Err(e) => resp.json(str.concat("{\"error\":", str.concat(jv.stringify(JStr(e.message)), "}"))),
               Ok(_) => resp.json(str.concat("{\"ok\":true,\"org\":", str.concat(jv.stringify(JStr(d_org)), "}"))),
             }

@@ -59,8 +59,9 @@ fn count_kind(db :: Db, ids :: List[Str], kind :: Str) -> [sql, fs_read] Int {
   if list.is_empty(ids) {
     0
   } else {
-    let q := str.join(["SELECT COUNT(*) AS n FROM events WHERE ", audit.agent_where(ids), " AND kind='", audit.sq(kind), "'"], "")
-    let rows :: Result[List[{ n :: Int }], SqlError] := sql.query(db, q, [])
+    let aw := audit.agent_where(ids)
+    let q := str.join(["SELECT COUNT(*) AS n FROM events WHERE ", aw.clause, " AND kind=?"], "")
+    let rows :: Result[List[{ n :: Int }], SqlError] := sql.query(db, q, list.concat(aw.params, [PStr(kind)]))
     match rows {
       Err(_) => 0,
       Ok(rs) => match list.head(rs) {
@@ -133,8 +134,9 @@ fn chargeback_rows(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[{ payload_
   if list.is_empty(ids) {
     []
   } else {
-    let q := str.join(["SELECT payload_json FROM events WHERE ", audit.agent_where(ids), " AND kind='", audit.sq(chargeback_kind()), "'"], "")
-    let rows :: Result[List[{ payload_json :: Str }], SqlError] := sql.query(db, q, [])
+    let aw := audit.agent_where(ids)
+    let q := str.join(["SELECT payload_json FROM events WHERE ", aw.clause, " AND kind=?"], "")
+    let rows :: Result[List[{ payload_json :: Str }], SqlError] := sql.query(db, q, list.concat(aw.params, [PStr(chargeback_kind())]))
     match rows {
       Err(_) => [],
       Ok(rs) => rs,
@@ -146,8 +148,9 @@ fn spend_rows(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[{ payload_json 
   if list.is_empty(ids) {
     []
   } else {
-    let q := str.join(["SELECT payload_json FROM events WHERE ", audit.agent_where(ids), " AND kind='", audit.sq(spend_kind()), "'"], "")
-    let rows :: Result[List[{ payload_json :: Str }], SqlError] := sql.query(db, q, [])
+    let aw := audit.agent_where(ids)
+    let q := str.join(["SELECT payload_json FROM events WHERE ", aw.clause, " AND kind=?"], "")
+    let rows :: Result[List[{ payload_json :: Str }], SqlError] := sql.query(db, q, list.concat(aw.params, [PStr(spend_kind())]))
     match rows {
       Err(_) => [],
       Ok(rs) => rs,
