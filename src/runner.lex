@@ -292,7 +292,7 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
         JStr(rl)
       })))])
     })))]))
-    let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
+    let shell_cmd := str.join(["umask 077\nset -e\ntrap 'rm -f ", req_file, "' EXIT\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
     let outcome := match process.run("sh", ["-c", shell_cmd]) {
       Err(e) => { result: { text: fallback_reply(), tools: [] }, err: str.concat("spawn failed: ", e) },
