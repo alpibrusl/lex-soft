@@ -23,6 +23,7 @@
 # Environment variables:
 #   DB_URL         Postgres DSN or SQLite path  (default: platform.db)
 #   PORT           HTTP listen port             (default: 9000)
+#   AUDIT_KEY      bearer token for GET /v1/audit; unset = endpoint disabled
 
 import "std.net" as net
 
@@ -198,11 +199,27 @@ fn handle_pull(db :: Db, c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_rea
   }
 }
 
-fn sq_str(s :: Str) -> Str {
-  str.replace(s, "'", "''")
+# GDPR-10: /v1/audit returns raw trace rows (agent activity + PII in data_json),
+# so it must not be public. Require a bearer token equal to AUDIT_KEY. Fail-closed:
+# when AUDIT_KEY is unset the endpoint is disabled entirely (403), never open.
+fn handle_audit(db :: Db, audit_key :: Str, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+  if str.is_empty(audit_key) {
+    resp.forbidden("{\"error\":\"audit endpoint disabled (AUDIT_KEY unset)\"}")
+  } else {
+    match ctx.bearer_token(c) {
+      None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
+      Some(tok) => if tok == audit_key {
+        audit_query(db, c)
+      } else {
+        resp.unauthorized("{\"error\":\"invalid token\"}")
+      },
+    }
+  }
 }
 
-fn handle_audit(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+# GDPR-10: all filters bound as parameters ($?), never string-concatenated,
+# so caller-supplied agent_id/event_kind/since can't inject SQL.
+fn audit_query(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
   let agent_id := ctx.query_param_or(c, "agent_id", "")
   let event_kind := ctx.query_param_or(c, "event_kind", "")
   let since := ctx.query_param_or(c, "since", "")
@@ -211,23 +228,39 @@ fn handle_audit(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
     Some(n) => n,
     None => 100,
   }
-  let w1 := if str.is_empty(agent_id) {
+  let f1 := if str.is_empty(agent_id) {
     ""
   } else {
-    str.join([" AND agent_id='", sq_str(agent_id), "'"], "")
+    " AND agent_id=?"
   }
-  let w2 := if str.is_empty(event_kind) {
+  let f2 := if str.is_empty(event_kind) {
     ""
   } else {
-    str.join([" AND event_kind='", sq_str(event_kind), "'"], "")
+    " AND event_kind=?"
   }
-  let w3 := if str.is_empty(since) {
+  let f3 := if str.is_empty(since) {
     ""
   } else {
-    str.join([" AND ts>='", sq_str(since), "'"], "")
+    " AND ts>=?"
   }
-  let q := str.join(["SELECT id, run_id, agent_id, event_kind, data_json, ts FROM traces WHERE 1=1", w1, w2, w3, " ORDER BY ts DESC LIMIT ", int.to_str(lim)], "")
-  let result :: Result[List[{ id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }], SqlError] := sql.query(db, q, [])
+  let p1 := if str.is_empty(agent_id) {
+    []
+  } else {
+    [PStr(agent_id)]
+  }
+  let p2 := if str.is_empty(event_kind) {
+    []
+  } else {
+    [PStr(event_kind)]
+  }
+  let p3 := if str.is_empty(since) {
+    []
+  } else {
+    [PStr(since)]
+  }
+  let q := str.join(["SELECT id, run_id, agent_id, event_kind, data_json, ts FROM traces WHERE 1=1", f1, f2, f3, " ORDER BY ts DESC LIMIT ?"], "")
+  let params := list.concat(list.concat(list.concat(p1, p2), p3), [PInt(lim)])
+  let result :: Result[List[{ id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }], SqlError] := sql.query(db, q, params)
   match result {
     Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e.message))]))),
     Ok(rows) => {
@@ -297,7 +330,7 @@ fn handle_dashboard(_c :: ctx.Ctx) -> resp.Response {
 }
 
 # ---- Router setup -----------------------------------------------
-fn build_router(db :: Db) -> router.Router {
+fn build_router(db :: Db, audit_key :: Str) -> router.Router {
   let r0 := router.new()
   let rdash := router.route(r0, "GET", "/", handle_dashboard)
   let r1 := router.route_effectful(rdash, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
@@ -325,7 +358,7 @@ fn build_router(db :: Db) -> router.Router {
     handle_pull(db, c)
   })
   let r9 := router.route_effectful(r8, "GET", "/v1/audit", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    handle_audit(db, c)
+    handle_audit(db, audit_key, c)
   })
   let r10 := router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_health(db, c)
@@ -348,16 +381,25 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
     Some(u) => u,
     None => "platform.db",
   }
+  let audit_key := match env.get("AUDIT_KEY") {
+    Some(k) => k,
+    None => "",
+  }
   let __p1 := io.print("=== lex-soft platform server ===")
   let __p2 := io.print(str.concat("  port:    ", int.to_str(port)))
   let __p3 := io.print(str.concat("  db:      ", db_url))
+  let __pa := io.print(str.concat("  /v1/audit: ", if str.is_empty(audit_key) {
+    "DISABLED (set AUDIT_KEY to enable)"
+  } else {
+    "auth required"
+  }))
   match sql.open(db_url) {
     Err(e) => io.print(str.concat("FATAL: db open: ", e.message)),
     Ok(db) => match migrate.run(db) {
       Err(e) => io.print(str.concat("FATAL: migrate: ", e)),
       Ok(_) => {
         let __p4 := io.print("  migrations ok")
-        let r := build_router(db)
+        let r := build_router(db, audit_key)
         let __p5 := io.print("  ready")
         let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
           let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }

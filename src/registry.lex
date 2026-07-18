@@ -35,10 +35,6 @@ fn cols() -> Str {
   "id, kind, name, inbox_url, capabilities_json, status, tenant"
 }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 # Register into the default tenant (back-compatible single-tenant API).
 fn register(db :: Db, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
   register_in(db, "default", id, kind, name, inbox_url, capabilities)
@@ -51,8 +47,8 @@ fn register_in(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inb
   let caps_json := jv.stringify(JList(list.map(capabilities, fn (c :: Str) -> jv.Json {
     JStr(c)
   })))
-  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'active', '", sq(tenant), "', '", now, "', '", now, "') ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', tenant=excluded.tenant, last_seen_at=excluded.last_seen_at"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', tenant=excluded.tenant, last_seen_at=excluded.last_seen_at"
+  match sql.exec(db, q, [PStr(id), PStr(kind), PStr(name), PStr(inbox_url), PStr(caps_json), PStr(tenant), PStr(now), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -60,8 +56,8 @@ fn register_in(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inb
 
 fn heartbeat(db :: Db, id :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  let q := str.join(["UPDATE agents SET last_seen_at='", now, "' WHERE id='", sq(id), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "UPDATE agents SET last_seen_at=? WHERE id=?"
+  match sql.exec(db, q, [PStr(now), PStr(id)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -77,8 +73,8 @@ fn register_pooled(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str,
     JStr(cap)
   })))
   let now := time.now_str()
-  let q := str.join(["INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES ('", sq(id), "', '", sq(kind), "', '", sq(name), "', '", sq(inbox_url), "', '", sq(caps_json), "', 'pooled', '", sq(tenant), "', '", now, "', '", now, "') ON CONFLICT(id) DO NOTHING"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'pooled', ?, ?, ?) ON CONFLICT(id) DO NOTHING"
+  match sql.exec(db, q, [PStr(id), PStr(kind), PStr(name), PStr(inbox_url), PStr(caps_json), PStr(tenant), PStr(now), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
@@ -88,8 +84,8 @@ fn register_pooled(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str,
 # claimed ids (possibly fewer than asked — the pool may be short). A non-empty
 # display_name renames the claimed agents "<display_name> <n>".
 fn claim_pooled(db :: Db, kind :: Str, count :: Int, new_tenant :: Str, display_name :: Str) -> [sql, fs_read, fs_write, time] Result[List[Str], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents WHERE status='pooled' AND kind='", sq(kind), "' ORDER BY id LIMIT ", int.to_str(count)], "")
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE status='pooled' AND kind=? ORDER BY id LIMIT ?"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(kind), PInt(count)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => {
@@ -102,8 +98,8 @@ fn claim_pooled(db :: Db, kind :: Str, count :: Int, new_tenant :: Str, display_
             } else {
               str.join([display_name, " ", int.to_str(i + 1)], "")
             }
-            let uq := str.join(["UPDATE agents SET tenant='", sq(new_tenant), "', status='active', name='", sq(name), "', last_seen_at='", now, "' WHERE id='", sq(r.id), "' AND status='pooled'"], "")
-            let __u := sql.exec(db, uq, [])
+            let uq := "UPDATE agents SET tenant=?, status='active', name=?, last_seen_at=? WHERE id=? AND status='pooled'"
+            let __u := sql.exec(db, uq, [PStr(new_tenant), PStr(name), PStr(now), PStr(r.id)])
             r.id
           },
         }
@@ -115,16 +111,16 @@ fn claim_pooled(db :: Db, kind :: Str, count :: Int, new_tenant :: Str, display_
 
 fn set_status(db :: Db, id :: Str, status :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  let q := str.join(["UPDATE agents SET status='", sq(status), "', last_seen_at='", now, "' WHERE id='", sq(id), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "UPDATE agents SET status=?, last_seen_at=? WHERE id=?"
+  match sql.exec(db, q, [PStr(status), PStr(now), PStr(id)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
 }
 
 fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents WHERE id='", sq(id), "'"], "")
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE id=?"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(id)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(match list.head(rs) {
@@ -135,8 +131,8 @@ fn find_by_id(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[AgentRef], St
 }
 
 fn find_by_kind(db :: Db, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents WHERE kind='", sq(kind), "' AND status='active'"], "")
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE kind=? AND status='active'"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(kind)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {
@@ -161,8 +157,8 @@ fn list_all(db :: Db) -> [sql, fs_read] Result[List[AgentRef], Str] {
 # rows owned by the given tenant; `find_by_id` is unscoped on purpose (it is a
 # direct-key lookup used after a tenant check), the list views are the boundary.
 fn list_by_tenant(db :: Db, tenant :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant='", sq(tenant), "' ORDER BY kind, name"], "")
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant=? ORDER BY kind, name"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(tenant)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {
@@ -172,8 +168,8 @@ fn list_by_tenant(db :: Db, tenant :: Str) -> [sql, fs_read] Result[List[AgentRe
 }
 
 fn find_by_kind_in(db :: Db, tenant :: Str, kind :: Str) -> [sql, fs_read] Result[List[AgentRef], Str] {
-  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant='", sq(tenant), "' AND kind='", sq(kind), "' AND status='active'"], "")
-  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM agents WHERE tenant=? AND kind=? AND status='active'"], "")
+  let rows :: Result[List[AgentRow], SqlError] := sql.query(db, q, [PStr(tenant), PStr(kind)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: AgentRow) -> AgentRef {
