@@ -46,9 +46,10 @@ import "lex-crypto/src/ed25519" as ed
 # A raw trail event row (mirrors lex-trail's events table columns).
 type EvRow = { id :: Str, kind :: Str, parent :: Str, payload_json :: Str, ts_ms :: Int }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
+# A SQL fragment together with the parameters its `?` placeholders bind, so a
+# dynamically-built WHERE can be passed to sql.query without concatenating any
+# caller value into the query text.
+type WhereClause = { clause :: Str, params :: List[SqlParam] }
 
 # The agent ids owned by an org (its tenant slice of the registry). This is the
 # tenant boundary: an account can only ever see events for these agents.
@@ -73,11 +74,14 @@ fn in_set(ids :: List[Str], want :: Str) -> Bool {
 # so an org's escalations aren't silently invisible to its own audit/usage
 # queries. Fixed here rather than left as a #60 follow-up since #61's usage
 # counters depend on it being correct.
-fn agent_where(ids :: List[Str]) -> Str {
-  let parts := list.map(ids, fn (id :: Str) -> Str {
-    str.join(["(payload_json LIKE '%\"agent\":\"", sq(id), "\"%' OR payload_json LIKE '%\"from_agent\":\"", sq(id), "\"%')"], "")
+fn agent_where(ids :: List[Str]) -> WhereClause {
+  let parts := list.map(ids, fn (_id :: Str) -> Str {
+    "(payload_json LIKE ? OR payload_json LIKE ?)"
   })
-  str.join(["(", str.join(parts, " OR "), ")"], "")
+  let params := list.fold(ids, [], fn (acc :: List[SqlParam], id :: Str) -> List[SqlParam] {
+    list.concat(acc, [PStr(str.join(["%\"agent\":\"", id, "\"%"], "")), PStr(str.join(["%\"from_agent\":\"", id, "\"%"], ""))])
+  })
+  { clause: str.join(["(", str.join(parts, " OR "), ")"], ""), params: params }
 }
 
 # Page size for both /audit/events and /audit/interactions.
@@ -92,17 +96,23 @@ fn query_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :: 
   if list.is_empty(ids) {
     []
   } else {
+    let aw := agent_where(ids)
     let kind_clause := if str.is_empty(kind_filter) {
       ""
     } else {
-      str.join([" AND kind='", sq(kind_filter), "'"], "")
+      " AND kind=?"
+    }
+    let kind_params := if str.is_empty(kind_filter) {
+      []
+    } else {
+      [PStr(kind_filter)]
     }
     let cursor_clause := match before_ts_ms {
       None => "",
       Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
     }
-    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
-    let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
+    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", aw.clause, kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(page_size())], "")
+    let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, list.concat(aw.params, kind_params))
     match rows {
       Err(_) => [],
       Ok(rs) => rs,
@@ -116,17 +126,23 @@ fn collect_events(db :: Db, ids :: List[Str], kind_filter :: Str, before_ts_ms :
   if list.is_empty(ids) {
     []
   } else {
+    let aw := agent_where(ids)
     let kind_clause := if str.is_empty(kind_filter) {
       ""
     } else {
-      str.join([" AND kind='", sq(kind_filter), "'"], "")
+      " AND kind=?"
+    }
+    let kind_params := if str.is_empty(kind_filter) {
+      []
+    } else {
+      [PStr(kind_filter)]
     }
     let cursor_clause := match before_ts_ms {
       None => "",
       Some(ts) => str.join([" AND ts_ms < ", int.to_str(ts)], ""),
     }
-    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", agent_where(ids), kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(cap)], "")
-    let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, [])
+    let q := str.join(["SELECT id, kind, COALESCE(parent, '') AS parent, payload_json, ts_ms FROM events WHERE ", aw.clause, kind_clause, cursor_clause, " ORDER BY ts_ms DESC LIMIT ", int.to_str(cap)], "")
+    let rows :: Result[List[EvRow], SqlError] := sql.query(db, q, list.concat(aw.params, kind_params))
     match rows {
       Err(_) => [],
       Ok(rs) => rs,

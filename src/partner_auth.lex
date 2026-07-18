@@ -97,22 +97,18 @@ fn init(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   }
 }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 fn cache_key(db :: Db, org :: Str, public_key :: Str) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
-  let q := str.join(["INSERT INTO partner_keys (org, public_key, updated_at) VALUES ('", sq(org), "', '", sq(public_key), "', '", now, "') ON CONFLICT(org) DO UPDATE SET public_key=excluded.public_key, updated_at=excluded.updated_at"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO partner_keys (org, public_key, updated_at) VALUES (?, ?, ?) ON CONFLICT(org) DO UPDATE SET public_key=excluded.public_key, updated_at=excluded.updated_at"
+  match sql.exec(db, q, [PStr(org), PStr(public_key), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
 }
 
 fn get_key(db :: Db, org :: Str) -> [sql, fs_read] Option[Str] {
-  let q := str.join(["SELECT org, public_key FROM partner_keys WHERE org='", sq(org), "'"], "")
-  let rows :: Result[List[KeyRow], SqlError] := sql.query(db, q, [])
+  let q := "SELECT org, public_key FROM partner_keys WHERE org=?"
+  let rows :: Result[List[KeyRow], SqlError] := sql.query(db, q, [PStr(org)])
   match rows {
     Err(_) => None,
     Ok(rs) => match list.head(rs) {
@@ -123,8 +119,8 @@ fn get_key(db :: Db, org :: Str) -> [sql, fs_read] Option[Str] {
 }
 
 fn drop_key(db :: Db, org :: Str) -> [sql, fs_write] Result[Unit, Str] {
-  let q := str.join(["DELETE FROM partner_keys WHERE org='", sq(org), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "DELETE FROM partner_keys WHERE org=?"
+  match sql.exec(db, q, [PStr(org)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }

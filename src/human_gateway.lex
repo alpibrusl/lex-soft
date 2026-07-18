@@ -65,10 +65,6 @@ import "./notifications" as notifications
 
 type Approval = { id :: Str, from_agent :: Str, question :: Str, kind :: Str, detail :: Str, status :: Str, decision :: Str, decided_by :: Str, signature :: Str, created_at :: Str, decided_at :: Str }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 fn cols() -> Str {
   "id, from_agent, question, kind, detail, status, decision, decided_by, signature, created_at, decided_at"
 }
@@ -105,8 +101,8 @@ fn account_for_agent(db :: Db, agent_id :: Str) -> [sql, fs_read] Str {
 fn request(db :: Db, from_agent :: Str, question :: Str, kind :: Str, detail :: Str) -> [sql, fs_read, fs_write, random, time] Result[Str, Str] {
   let id := crypto.random_str_hex(16)
   let now := time.now_str()
-  let q := str.join(["INSERT INTO approvals (id, from_agent, question, kind, detail, status, created_at) VALUES ('", id, "', '", sq(from_agent), "', '", sq(question), "', '", sq(kind), "', '", sq(detail), "', 'pending', '", now, "')"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO approvals (id, from_agent, question, kind, detail, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)"
+  match sql.exec(db, q, [PStr(id), PStr(from_agent), PStr(question), PStr(kind), PStr(detail), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => {
       let log := settlement.trail_on(db)
@@ -145,8 +141,8 @@ fn decide(db :: Db, sign_seed :: Bytes, id :: Str, approve :: Bool, decided_by :
   if str.is_empty(sig) {
     Err("signing failed")
   } else {
-    let q := str.join(["UPDATE approvals SET status='decided', decision='", decision, "', decided_by='", sq(decided_by), "', signature='", sq(sig), "', decided_at='", now, "' WHERE id='", sq(id), "' AND status='pending'"], "")
-    match sql.exec(db, q, []) {
+    let q := "UPDATE approvals SET status='decided', decision=?, decided_by=?, signature=?, decided_at=? WHERE id=? AND status='pending'"
+    match sql.exec(db, q, [PStr(decision), PStr(decided_by), PStr(sig), PStr(now), PStr(id)]) {
       Err(e) => Err(e.message),
       Ok(_) => {
         let log := settlement.trail_on(db)
@@ -164,8 +160,8 @@ fn verify_decision(pub_b64 :: Str, id :: Str, decision :: Str, decided_by :: Str
 }
 
 fn find(db :: Db, id :: Str) -> [sql, fs_read] Option[Approval] {
-  let q := str.join(["SELECT ", cols(), " FROM approvals WHERE id='", sq(id), "'"], "")
-  let rows :: Result[List[Approval], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cols(), " FROM approvals WHERE id=?"], "")
+  let rows :: Result[List[Approval], SqlError] := sql.query(db, q, [PStr(id)])
   match rows {
     Err(_) => None,
     Ok(rs) => list.head(rs),

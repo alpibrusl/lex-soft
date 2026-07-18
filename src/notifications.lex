@@ -56,10 +56,6 @@ type Channel = { id :: Str, account :: Str, ctype :: Str, target :: Str, active 
 
 type Notification = { id :: Str, account :: Str, event_type :: Str, payload_json :: Str, status :: Str, attempts :: Int, response_code :: Int, created_at :: Str, delivered_at :: Str }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 # ── Channel config (serve-safe: sql only) ────────────────────────────────────
 fn chan_cols() -> Str {
   "id, account, ctype, target, active"
@@ -68,16 +64,16 @@ fn chan_cols() -> Str {
 fn configure_channel(db :: Db, account :: Str, ctype :: Str, target :: Str) -> [sql, fs_write, time, random] Result[Channel, Str] {
   let id := str.concat("ch_", crypto.random_str_hex(10))
   let now := time.now_str()
-  let q := str.join(["INSERT INTO notify_channels (id, account, ctype, target, active, created_at) VALUES ('", sq(id), "', '", sq(account), "', '", sq(ctype), "', '", sq(target), "', 1, '", now, "')"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO notify_channels (id, account, ctype, target, active, created_at) VALUES (?, ?, ?, ?, 1, ?)"
+  match sql.exec(db, q, [PStr(id), PStr(account), PStr(ctype), PStr(target), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok({ id: id, account: account, ctype: ctype, target: target, active: 1 }),
   }
 }
 
 fn list_channels(db :: Db, account :: Str) -> [sql, fs_read] List[Channel] {
-  let q := str.join(["SELECT ", chan_cols(), " FROM notify_channels WHERE account='", sq(account), "' ORDER BY created_at"], "")
-  let rows :: Result[List[Channel], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", chan_cols(), " FROM notify_channels WHERE account=? ORDER BY created_at"], "")
+  let rows :: Result[List[Channel], SqlError] := sql.query(db, q, [PStr(account)])
   match rows {
     Err(_) => [],
     Ok(rs) => rs,
@@ -85,8 +81,8 @@ fn list_channels(db :: Db, account :: Str) -> [sql, fs_read] List[Channel] {
 }
 
 fn active_channels(db :: Db, account :: Str) -> [sql, fs_read] List[Channel] {
-  let q := str.join(["SELECT ", chan_cols(), " FROM notify_channels WHERE account='", sq(account), "' AND active=1"], "")
-  let rows :: Result[List[Channel], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", chan_cols(), " FROM notify_channels WHERE account=? AND active=1"], "")
+  let rows :: Result[List[Channel], SqlError] := sql.query(db, q, [PStr(account)])
   match rows {
     Err(_) => [],
     Ok(rs) => rs,
@@ -99,16 +95,16 @@ fn active_channels(db :: Db, account :: Str) -> [sql, fs_read] List[Channel] {
 fn enqueue(db :: Db, account :: Str, event_type :: Str, payload_json :: Str) -> [sql, fs_write, time, random] Str {
   let id := str.concat("nt_", crypto.random_str_hex(12))
   let now := time.now_str()
-  let q := str.join(["INSERT INTO notifications (id, account, event_type, payload_json, status, attempts, response_code, created_at) VALUES ('", sq(id), "', '", sq(account), "', '", sq(event_type), "', '", sq(payload_json), "', 'pending', 0, 0, '", now, "')"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO notifications (id, account, event_type, payload_json, status, attempts, response_code, created_at) VALUES (?, ?, ?, ?, 'pending', 0, 0, ?)"
+  match sql.exec(db, q, [PStr(id), PStr(account), PStr(event_type), PStr(payload_json), PStr(now)]) {
     Err(_) => "",
     Ok(_) => id,
   }
 }
 
 fn list_notifications(db :: Db, account :: Str) -> [sql, fs_read] List[Notification] {
-  let q := str.join(["SELECT id, account, event_type, payload_json, status, attempts, response_code, created_at, delivered_at FROM notifications WHERE account='", sq(account), "' ORDER BY created_at DESC LIMIT 200"], "")
-  let rows :: Result[List[Notification], SqlError] := sql.query(db, q, [])
+  let q := "SELECT id, account, event_type, payload_json, status, attempts, response_code, created_at, delivered_at FROM notifications WHERE account=? ORDER BY created_at DESC LIMIT 200"
+  let rows :: Result[List[Notification], SqlError] := sql.query(db, q, [PStr(account)])
   match rows {
     Err(_) => [],
     Ok(rs) => rs,
@@ -153,17 +149,9 @@ fn post_webhook(url :: Str, body :: Str) -> [net, io] Int {
 }
 
 fn mark(db :: Db, id :: Str, status :: Str, code :: Int, now :: Str) -> [sql, fs_write] Unit {
-  let q := str.join(["UPDATE notifications SET status='", sq(status), "', attempts=attempts+1, response_code=", int_str(code), ", delivered_at='", now, "' WHERE id='", sq(id), "'"], "")
-  let __r := sql.exec(db, q, [])
+  let q := "UPDATE notifications SET status=?, attempts=attempts+1, response_code=?, delivered_at=? WHERE id=?"
+  let __r := sql.exec(db, q, [PStr(status), PInt(code), PStr(now), PStr(id)])
   ()
-}
-
-fn int_str(n :: Int) -> Str {
-  match n {
-    0 => "0",
-    200 => "200",
-    _ => "1",
-  }
 }
 
 # Deliver one notification to all of its account's active webhook channels; a

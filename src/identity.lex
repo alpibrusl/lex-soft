@@ -49,10 +49,6 @@ type IssuedCredential = { cred_id :: Str, jti :: Str, token :: Str }
 # downstream tenant-scoped query (#60/#61) filters by.
 type Subject = { account :: Str, org :: Str, agent_id :: Str, scope :: Str }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 # ── Accounts ──────────────────────────────────────────────────────────────────
 fn acct_cols() -> Str {
   "id, org, name, status, plan"
@@ -60,16 +56,16 @@ fn acct_cols() -> Str {
 
 fn create_account(db :: Db, id :: Str, org :: Str, name :: Str, plan :: Str) -> [sql, fs_write, time] Result[Account, Str] {
   let now := time.now_str()
-  let q := str.join(["INSERT INTO accounts (id, org, name, status, plan, created_at) VALUES ('", sq(id), "', '", sq(org), "', '", sq(name), "', 'active', '", sq(plan), "', '", now, "') ON CONFLICT(id) DO UPDATE SET org=excluded.org, name=excluded.name, plan=excluded.plan"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO accounts (id, org, name, status, plan, created_at) VALUES (?, ?, ?, 'active', ?, ?) ON CONFLICT(id) DO UPDATE SET org=excluded.org, name=excluded.name, plan=excluded.plan"
+  match sql.exec(db, q, [PStr(id), PStr(org), PStr(name), PStr(plan), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok({ id: id, org: org, name: name, status: "active", plan: plan }),
   }
 }
 
 fn get_account(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[Account], Str] {
-  let q := str.join(["SELECT ", acct_cols(), " FROM accounts WHERE id='", sq(id), "'"], "")
-  let rows :: Result[List[Account], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", acct_cols(), " FROM accounts WHERE id=?"], "")
+  let rows :: Result[List[Account], SqlError] := sql.query(db, q, [PStr(id)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.head(rs)),
@@ -79,8 +75,8 @@ fn get_account(db :: Db, id :: Str) -> [sql, fs_read] Result[Option[Account], St
 # Resolve an account by its org (the registry/mesh join key). Used when a mesh
 # event carries an org and the caller needs the owning account.
 fn account_by_org(db :: Db, org :: Str) -> [sql, fs_read] Result[Option[Account], Str] {
-  let q := str.join(["SELECT ", acct_cols(), " FROM accounts WHERE org='", sq(org), "'"], "")
-  let rows :: Result[List[Account], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", acct_cols(), " FROM accounts WHERE org=?"], "")
+  let rows :: Result[List[Account], SqlError] := sql.query(db, q, [PStr(org)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.head(rs)),
@@ -111,16 +107,16 @@ fn issue_credential(db :: Db, secret :: Bytes, our_org :: Str, account :: Str, o
   let token := conn_token.issue(secret, our_org, org, scope, ttl, jti, time.now())
   let cred_id := str.concat("cr_", crypto.random_str_hex(8))
   let now_s := time.now_str()
-  let q := str.join(["INSERT INTO credentials (id, account, org, agent_id, scope, jti, revoked, created_at) VALUES ('", sq(cred_id), "', '", sq(account), "', '", sq(org), "', '", sq(agent_id), "', '", sq(scope), "', '", sq(jti), "', 0, '", now_s, "')"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO credentials (id, account, org, agent_id, scope, jti, revoked, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)"
+  match sql.exec(db, q, [PStr(cred_id), PStr(account), PStr(org), PStr(agent_id), PStr(scope), PStr(jti), PStr(now_s)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok({ cred_id: cred_id, jti: jti, token: token }),
   }
 }
 
 fn find_cred_by_jti(db :: Db, jti :: Str) -> [sql, fs_read] Result[Option[Credential], Str] {
-  let q := str.join(["SELECT ", cred_cols(), " FROM credentials WHERE jti='", sq(jti), "'"], "")
-  let rows :: Result[List[Credential], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cred_cols(), " FROM credentials WHERE jti=?"], "")
+  let rows :: Result[List[Credential], SqlError] := sql.query(db, q, [PStr(jti)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.head(rs)),
@@ -128,8 +124,8 @@ fn find_cred_by_jti(db :: Db, jti :: Str) -> [sql, fs_read] Result[Option[Creden
 }
 
 fn list_credentials(db :: Db, account :: Str) -> [sql, fs_read] Result[List[Credential], Str] {
-  let q := str.join(["SELECT ", cred_cols(), " FROM credentials WHERE account='", sq(account), "' ORDER BY created_at"], "")
-  let rows :: Result[List[Credential], SqlError] := sql.query(db, q, [])
+  let q := str.join(["SELECT ", cred_cols(), " FROM credentials WHERE account=? ORDER BY created_at"], "")
+  let rows :: Result[List[Credential], SqlError] := sql.query(db, q, [PStr(account)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(rs),
@@ -137,8 +133,8 @@ fn list_credentials(db :: Db, account :: Str) -> [sql, fs_read] Result[List[Cred
 }
 
 fn revoke_credential(db :: Db, cred_id :: Str) -> [sql, fs_write] Result[Unit, Str] {
-  let q := str.join(["UPDATE credentials SET revoked=1 WHERE id='", sq(cred_id), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "UPDATE credentials SET revoked=1 WHERE id=?"
+  match sql.exec(db, q, [PStr(cred_id)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }

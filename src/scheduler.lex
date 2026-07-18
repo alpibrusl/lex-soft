@@ -43,10 +43,6 @@ import "./registry" as reg
 
 type Schedule = { id :: Str, agent_id :: Str, inbox_url :: Str, prompt :: Str, interval_seconds :: Int, next_at :: Int, active :: Int }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 fn cols() -> Str {
   "id, agent_id, inbox_url, prompt, interval_seconds, next_at, active"
 }
@@ -79,8 +75,8 @@ fn subscribe(db :: Db, agent_id :: Str, inbox_url :: Str, prompt :: Str, interva
   } else {
     let id := crypto.random_str_hex(16)
     let next := now_s() + interval_seconds
-    let q := str.join(["INSERT INTO agent_schedules (id, agent_id, inbox_url, prompt, interval_seconds, next_at, active) VALUES ('", id, "', '", sq(agent_id), "', '", sq(url), "', '", sq(prompt), "', ", int.to_str(interval_seconds), ", ", int.to_str(next), ", 1)"], "")
-    match sql.exec(db, q, []) {
+    let q := "INSERT INTO agent_schedules (id, agent_id, inbox_url, prompt, interval_seconds, next_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)"
+    match sql.exec(db, q, [PStr(id), PStr(agent_id), PStr(url), PStr(prompt), PInt(interval_seconds), PInt(next)]) {
       Err(e) => Err(e.message),
       Ok(_) => Ok(id),
     }
@@ -108,8 +104,8 @@ fn due(db :: Db, now :: Int) -> [sql, fs_read] List[Schedule] {
 # Re-arm after a tick, whether or not delivery succeeded — a dead agent just
 # gets its next tick at the next interval instead of a tight retry storm.
 fn mark_ran(db :: Db, id :: Str, now :: Int) -> [sql, fs_write] Result[Unit, Str] {
-  let q := str.join(["UPDATE agent_schedules SET next_at = ", int.to_str(now), " + interval_seconds WHERE id='", sq(id), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "UPDATE agent_schedules SET next_at = ? + interval_seconds WHERE id=?"
+  match sql.exec(db, q, [PInt(now), PStr(id)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
