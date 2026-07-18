@@ -22,15 +22,10 @@ fn new_run_id() -> [random, crypto] Str {
   crypto.random_str_hex(16)
 }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 fn record(db :: Db, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str) -> [sql, fs_write, time, random, crypto] Unit {
   let id := new_run_id()
   let now := time.now_str()
-  let q := str.join(["INSERT INTO traces (id, run_id, agent_id, event_kind, data_json, ts) VALUES ('", id, "', '", sq(run_id), "', '", sq(agent_id), "', '", sq(event_kind), "', '", sq(data_json), "', '", now, "')"], "")
-  let __lex_discard_1 := sql.exec(db, q, [])
+  let __lex_discard_1 := sql.exec(db, "INSERT INTO traces (id, run_id, agent_id, event_kind, data_json, ts) VALUES (?, ?, ?, ?, ?, ?)", [PStr(id), PStr(run_id), PStr(agent_id), PStr(event_kind), PStr(data_json), PStr(now)])
   ()
 }
 
@@ -43,8 +38,8 @@ fn record_platform(db :: Db, agent_id :: Str, event_kind :: Str, detail :: Str) 
 # "Agent:"), oldest-first, for feeding prior-interaction context back into the
 # next prompt. Single-column query (safe under the sqlite multi-col bug).
 fn recent_exchanges(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
-  let q := str.join(["SELECT line FROM (SELECT (CASE event_kind WHEN 'received' THEN 'User: ' ELSE 'Agent: ' END) || data_json AS line, ts FROM traces WHERE agent_id = '", sq(agent_id), "' AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
-  match sql.query(db, q, []) {
+  let q := str.join(["SELECT line FROM (SELECT (CASE event_kind WHEN 'received' THEN 'User: ' ELSE 'Agent: ' END) || data_json AS line, ts FROM traces WHERE agent_id = ? AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
+  match sql.query(db, q, [PStr(agent_id)]) {
     Err(_) => "",
     Ok(rows) => str.join(list.map(rows, fn (r :: jv.Json) -> Str {
       match sql.get_str(r, "line") {
@@ -59,8 +54,8 @@ fn recent_exchanges(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
 # oldest-first — fed to the LLM as real prior conversation turns. Prior empty/
 # error agent responses (start with '[') are filtered out.
 fn recent_messages_json(db :: Db, agent_id :: Str, n :: Int) -> [sql] Str {
-  let q := str.join(["SELECT j FROM (SELECT json_object('role', CASE event_kind WHEN 'received' THEN 'user' ELSE 'agent' END, 'text', substr(data_json, 1, 800)) AS j, ts FROM traces WHERE agent_id = '", sq(agent_id), "' AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
-  match sql.query(db, q, []) {
+  let q := str.join(["SELECT j FROM (SELECT json_object('role', CASE event_kind WHEN 'received' THEN 'user' ELSE 'agent' END, 'text', substr(data_json, 1, 800)) AS j, ts FROM traces WHERE agent_id = ? AND event_kind IN ('received','llm_done') AND data_json <> '' AND data_json NOT LIKE '[%' ORDER BY ts DESC LIMIT ", int.to_str(n), ") s ORDER BY ts ASC"], "")
+  match sql.query(db, q, [PStr(agent_id)]) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
       match sql.get_str(r, "j") {
@@ -192,8 +187,8 @@ fn recall_memory_json(db :: Db, agent_id :: Str, n :: Int) -> [sql, time] Str {
 # Each row is built server-side via json_object() so the result is a single
 # column (the lex sqlite driver mis-maps multi-column raw rows).
 fn recent_by_agent(db :: Db, agent_id :: Str, lim :: Int) -> [sql] Str {
-  let q := str.join(["SELECT json_object('run_id', run_id, 'event', event_kind, 'data', data_json, 'ts', ts) AS j FROM traces WHERE agent_id = '", sq(agent_id), "' ORDER BY ts DESC LIMIT ", int.to_str(lim)], "")
-  match sql.query(db, q, []) {
+  let q := str.join(["SELECT json_object('run_id', run_id, 'event', event_kind, 'data', data_json, 'ts', ts) AS j FROM traces WHERE agent_id = ? ORDER BY ts DESC LIMIT ", int.to_str(lim)], "")
+  match sql.query(db, q, [PStr(agent_id)]) {
     Err(_) => "[]",
     Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
       match sql.get_str(r, "j") {

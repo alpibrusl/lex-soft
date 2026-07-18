@@ -31,31 +31,27 @@ fn parse_rel_row(r :: RelRow) -> Relationship {
   { id: r.id, from_agent: r.from_agent, to_agent: r.to_agent, role: r.role, contract_json: r.contract_json }
 }
 
-fn sq(s :: Str) -> Str {
-  str.replace(s, "'", "''")
-}
-
 fn add(db :: Db, from_agent :: Str, to_agent :: Str, role :: Str, contract_json :: Str) -> [sql, fs_write, random, time] Result[Unit, Str] {
   let id := crypto.random_str_hex(16)
   let now := time.now_str()
-  let q := str.join(["INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) SELECT '", id, "', '", sq(from_agent), "', '", sq(to_agent), "', '", sq(role), "', '", sq(contract_json), "', 1, '", now, "' WHERE NOT EXISTS (SELECT 1 FROM relationships WHERE from_agent='", sq(from_agent), "' AND to_agent='", sq(to_agent), "' AND role='", sq(role), "' AND active=1)"], "")
-  match sql.exec(db, q, []) {
+  let q := "INSERT INTO relationships (id, from_agent, to_agent, role, contract_json, active, created_at) SELECT ?, ?, ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM relationships WHERE from_agent=? AND to_agent=? AND role=? AND active=1)"
+  match sql.exec(db, q, [PStr(id), PStr(from_agent), PStr(to_agent), PStr(role), PStr(contract_json), PStr(now), PStr(from_agent), PStr(to_agent), PStr(role)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
 }
 
 fn remove(db :: Db, from_agent :: Str, to_agent :: Str, role :: Str) -> [sql, fs_write] Result[Unit, Str] {
-  let q := str.join(["UPDATE relationships SET active=0 WHERE from_agent='", sq(from_agent), "' AND to_agent='", sq(to_agent), "' AND role='", sq(role), "'"], "")
-  match sql.exec(db, q, []) {
+  let q := "UPDATE relationships SET active=0 WHERE from_agent=? AND to_agent=? AND role=?"
+  match sql.exec(db, q, [PStr(from_agent), PStr(to_agent), PStr(role)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),
   }
 }
 
 fn peers_of(db :: Db, from_agent :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
-  let q := str.join(["SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent='", sq(from_agent), "' AND active=1"], "")
-  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [])
+  let q := "SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent=? AND active=1"
+  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [PStr(from_agent)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
@@ -65,8 +61,8 @@ fn peers_of(db :: Db, from_agent :: Str) -> [sql, fs_read] Result[List[Relations
 }
 
 fn peers_by_role(db :: Db, from_agent :: Str, role :: Str) -> [sql, fs_read] Result[List[Relationship], Str] {
-  let q := str.join(["SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent='", sq(from_agent), "' AND role='", sq(role), "' AND active=1"], "")
-  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [])
+  let q := "SELECT id, from_agent, to_agent, role, contract_json, active FROM relationships WHERE from_agent=? AND role=? AND active=1"
+  let rows :: Result[List[RelRow], SqlError] := sql.query(db, q, [PStr(from_agent), PStr(role)])
   match rows {
     Err(e) => Err(e.message),
     Ok(rs) => Ok(list.map(rs, fn (r :: RelRow) -> Relationship {
