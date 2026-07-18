@@ -344,7 +344,7 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
     let req_json := jv.stringify(JObj([("provider", JStr(cfg.provider_name)), ("api_url", JStr(cfg.provider_url)), ("api_key", JStr(cfg.provider_key)), ("model", JStr(cfg.model_name)), ("system", JStr(sys)), ("user", JStr(text_in)), ("history", history), ("kind", JStr(cfg.kind)), ("agent_id", JStr(cfg.id)), ("peers", JList(list.map(peers, fn (p :: PeerInfo) -> jv.Json {
       JObj([("id", JStr(p.id)), ("kind", JStr(p.kind)), ("name", JStr(p.name)), ("inbox_url", JStr(p.inbox_url)), ("role", JStr(p.role)), ("token", JStr(p.token))])
     }))), ("tms_url", JStr(cfg.tms_url)), ("charge_url", JStr(cfg.charge_url)), ("telemetry_url", JStr(cfg.telemetry_url)), ("logistics_url", JStr(cfg.logistics_url))]))
-    let shell_cmd := str.join(["set -e\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
+    let shell_cmd := str.join(["umask 077\nset -e\ntrap 'rm -f ", req_file, "' EXIT\ncat > ", req_file, " <<'LEXEOF'\n", req_json, "\n", "LEXEOF\n", "LLM_REQ_FILE=", req_file, " lex run --allow-effects net,llm,io,env,fs_read,fs_write,proc,sql,time,concurrent,crypto,random llm_call.lex call"], "")
     let __t2 := trace.record(tdb, run_id, cfg.id, "llm_start", "{}")
     let outcome := match proc.spawn("sh", ["-c", shell_cmd]) {
       Err(e) => { result: { text: fallback_reply(), tools: [] }, err: str.concat("spawn failed: ", e) },
