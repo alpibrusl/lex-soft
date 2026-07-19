@@ -29,7 +29,7 @@ import "lex-trail/log" as tlog
 
 import "./settlement" as settlement
 
-import "./device_identity" as di
+import "lex-device-identity/src/device_identity" as di
 
 type DeviceRow = { device_id :: Str, tenant :: Str, kind :: Str, public_key :: Str, issued_at_ms :: Int, expires_at_ms :: Int }
 
