@@ -87,7 +87,6 @@ fn higher_plan_raises_the_ceiling() -> [sql, fs_read, fs_write, time] Result[Uni
   }
 }
 
-
 # Float-hostile amounts (0.10 + 0.20) must sum to exactly "0.30" through the
 # amount_dec path; a malformed amount is an Err, never a silent zero.
 fn exact_chargebacks_sum_exactly() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {

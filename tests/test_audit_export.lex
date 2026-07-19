@@ -80,7 +80,19 @@ fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time,
           if recomputed == digest and sig_ok and wrong_fails and str.contains(archive, "org-e") {
             Ok(())
           } else {
-            Err(str.join(["export bad: digest_match=", if recomputed == digest { "y" } else { "n" }, " sig_ok=", if sig_ok { "y" } else { "n" }, " wrong_fails=", if wrong_fails { "y" } else { "n" }], ""))
+            Err(str.join(["export bad: digest_match=", if recomputed == digest {
+              "y"
+            } else {
+              "n"
+            }, " sig_ok=", if sig_ok {
+              "y"
+            } else {
+              "n"
+            }, " wrong_fails=", if wrong_fails {
+              "y"
+            } else {
+              "n"
+            }], ""))
           }
         },
       }
@@ -106,3 +118,4 @@ fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurre
     ()
   }
 }
+
