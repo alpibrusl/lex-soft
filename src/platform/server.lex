@@ -53,6 +53,8 @@ import "../registry" as reg
 
 import "../relationships" as rel
 
+import "../resolver" as res
+
 import "../state_store" as state
 
 import "../migrate" as migrate
@@ -109,7 +111,7 @@ fn handle_register(db :: Db, c :: ctx.Ctx) -> [sql, fs_write, time, random, cryp
   }
 }
 
-fn handle_peers(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
+fn handle_peers(db :: Db, c :: ctx.Ctx, intent_map :: List[res.IntentRoles]) -> [sql, fs_read] resp.Response {
   match ctx.path_param(c, "id") {
     None => resp.bad_request("{\"error\":\"missing id\"}"),
     Some(agent_id) => {
@@ -117,7 +119,7 @@ fn handle_peers(db :: Db, c :: ctx.Ctx) -> [sql, fs_read] resp.Response {
       match rel.peers_of(db, agent_id) {
         Err(e) => resp.json(jv.stringify(JObj([("error", JStr(e))]))),
         Ok(rels) => {
-          let filtered := filter_by_intent(rels, intent)
+          let filtered := filter_by_intent(rels, intent, intent_map)
           let peer_jsons := list.fold(filtered, [], fn (acc :: List[jv.Json], r :: rel.Relationship) -> [sql, fs_read] List[jv.Json] {
             match reg.find_by_id(db, r.to_agent) {
               Ok(Some(ref)) => list.concat(acc, [JObj([("id", JStr(ref.id)), ("kind", JStr(ref.kind)), ("name", JStr(ref.name)), ("inbox_url", JStr(ref.inbox_url)), ("role", JStr(r.role))])]),
@@ -330,7 +332,11 @@ fn handle_dashboard(_c :: ctx.Ctx) -> resp.Response {
 }
 
 # ---- Router setup -----------------------------------------------
-fn build_router(db :: Db, audit_key :: Str) -> router.Router {
+# `intent_map` is the host-supplied intent -> roles map used by /peers filtering.
+# This reference host stays domain-agnostic and passes an empty map (no role
+# vocabulary in the core); a product host supplies its own (see
+# tests/test_intent_roles.lex) to make /peers?intent=... role-aware.
+fn build_router(db :: Db, audit_key :: Str, intent_map :: List[res.IntentRoles]) -> router.Router {
   let r0 := router.new()
   let rdash := router.route(r0, "GET", "/", handle_dashboard)
   let r1 := router.route_effectful(rdash, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
@@ -343,7 +349,7 @@ fn build_router(db :: Db, audit_key :: Str) -> router.Router {
     handle_register(db, c)
   })
   let r4 := router.route_effectful(r3, "GET", "/v1/agents/:id/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    handle_peers(db, c)
+    handle_peers(db, c, intent_map)
   })
   let r5 := router.route_effectful(r4, "POST", "/v1/agents/:id/heartbeat", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     handle_heartbeat(db, c)
@@ -399,7 +405,7 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
       Err(e) => io.print(str.concat("FATAL: migrate: ", e)),
       Ok(_) => {
         let __p4 := io.print("  migrations ok")
-        let r := build_router(db, audit_key)
+        let r := build_router(db, audit_key, [])
         let __p5 := io.print("  ready")
         let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
           let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
@@ -432,20 +438,11 @@ fn list_str_field(j :: jv.Json, key :: Str) -> List[Str] {
   }
 }
 
-fn filter_by_intent(rels :: List[rel.Relationship], intent :: Str) -> List[rel.Relationship] {
-  let roles := if intent == "charging" {
-    ["preferred_charger", "charger"]
-  } else {
-    if intent == "dispatch" {
-      ["contracted", "freelance"]
-    } else {
-      if intent == "reporting" {
-        ["reporting"]
-      } else {
-        []
-      }
-    }
-  }
+# Filter a peer set to the roles the host mapped `intent` to. The intent -> roles
+# map is host-supplied DOMAIN DATA (resolver.IntentRoles), never core vocabulary;
+# an intent absent from the map (or an empty map) imposes no role filter.
+fn filter_by_intent(rels :: List[rel.Relationship], intent :: Str, intent_map :: List[res.IntentRoles]) -> List[rel.Relationship] {
+  let roles := res.roles_for(intent_map, intent)
   if list.is_empty(roles) {
     rels
   } else {
