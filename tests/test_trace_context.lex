@@ -21,6 +21,7 @@ fn seed(db :: Db) -> [sql, fs_read, fs_write, time, random, crypto] Unit {
   let __a2 := trace.record(db, "ctx-A", "seller-1", "llm_done", "we hold 15 kg")
   let __b1 := trace.record(db, "ctx-B", "seller-1", "received", "flex tender: shed 100 kW")
   let __b2 := trace.record(db, "ctx-B", "seller-1", "llm_done", "COMMITTED 100 kW")
+  ()
 }
 
 fn scoped_history_stays_in_its_conversation() -> [sql, fs_read, fs_write, time, random, crypto] Result[Unit, Str] {
@@ -58,3 +59,4 @@ fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurre
     ()
   }
 }
+

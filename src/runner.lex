@@ -250,13 +250,13 @@ fn find_peer_url(peers :: List[PeerInfo], to_id :: Str) -> Option[Str] {
 
 # Core handler — backend-agnostic. Both make_handler and make_handler_remote
 # delegate here.
+# The handler's run_id derivation: the A2A contextId IS the conversation key —
+# traces of this turn are recorded under it, and only that conversation's turns
+# feed the model (#46 — the fabricate-from-stale-history failure). No contextId
+# from the transport -> fresh random run_id + agent-global history, as before.
 fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
   fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
     let tdb := trace_db(b)
-    # The A2A contextId IS the conversation key: traces of this turn are
-    # recorded under it, and only that conversation's turns feed the model
-    # (#46 — the fabricate-from-stale-history failure). No contextId from the
-    # transport -> fresh random run_id + agent-global history, as before.
     let run_id := if str.is_empty(m.context_id) {
       trace.new_run_id()
     } else {
