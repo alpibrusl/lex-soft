@@ -1,16 +1,22 @@
 # lex-soft Dockerfile
 # Build context: workspace root
 #
-# Requires lex-lang/target/linux/lex to exist. Build it first:
-#   ./lex-soft/build-lex-linux.sh
+# The lex runtime is fetched from the prebuilt lex-lang release.
 
 FROM debian:12-slim
 
+ARG LEX_VERSION=0.10.5
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-
-COPY lex-lang/target/linux/lex /usr/local/bin/lex
+RUN case "$TARGETARCH" in \
+      amd64) A=x86_64-unknown-linux-gnu ;; \
+      arm64) A=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported $TARGETARCH"; exit 1 ;; esac; \
+    curl -fsSL "https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}/lex-v${LEX_VERSION}-${A}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/lex' \
+ && lex --version
 
 COPY lex-schema/  /app/lex-schema/
 COPY lex-trail/   /app/lex-trail/
