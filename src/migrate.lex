@@ -119,6 +119,10 @@ fn ddl_notifications_acct_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account, created_at)"
 }
 
+fn ddl_device_certs() -> Str {
+  "CREATE TABLE IF NOT EXISTS device_certs (device_id TEXT PRIMARY KEY, tenant TEXT NOT NULL DEFAULT 'default', kind TEXT NOT NULL DEFAULT '', public_key TEXT NOT NULL, issued_at_ms BIGINT NOT NULL DEFAULT 0, expires_at_ms BIGINT NOT NULL DEFAULT 0, revoked BIGINT NOT NULL DEFAULT 0)"
+}
+
 fn exec_ddl(db :: Db, stmt :: Str) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, stmt, []) {
     Err(e) => Err(e.message),
@@ -169,6 +173,7 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __notif := exec_ddl_tolerant(db, ddl_notifications())
                 let __notifi := exec_ddl_tolerant(db, ddl_notifications_idx())
                 let __notifai := exec_ddl_tolerant(db, ddl_notifications_acct_idx())
+                let __devcerts := exec_ddl_tolerant(db, ddl_device_certs())
                 jobs.init_schema(db)
               },
             },
