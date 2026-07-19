@@ -23,6 +23,8 @@ import "lex-guard/src/token" as gtoken
 
 import "lex-guard/src/executor" as gexec
 
+import "lex-guard/src/release" as grel
+
 # Build a SpendIntent for a priced action.
 fn intent(merchant :: Str, amount :: Int, currency :: Str, category :: Str, memo :: Str) -> gm.SpendIntent {
   { merchant: merchant, amount: amount, currency: currency, category: category, memo: memo }
@@ -49,6 +51,24 @@ fn authorize_spend(log :: tlog.Log, token_pub_b64 :: Str, token_raw :: Str, i ::
 # Convenience: authorize through the mock rail.
 fn authorize_spend_mock(log :: tlog.Log, token_pub_b64 :: Str, token_raw :: Str, i :: gm.SpendIntent) -> [sql, time, net] Result[gm.SpendOutcome, Str] {
   authorize_spend(log, token_pub_b64, token_raw, i, mock_exec)
+}
+
+# Like `authorize_spend`, but ALSO pays only against PROOF. `evidence` names a
+# fulfilment trail + a domain spec (lex-guard/release): before the budget check
+# the gate re-derives that the outcome is intact, chained, and legal, and blocks
+# the spend (spend.blocked, never charged) if it isn't. `None` is identical to
+# `authorize_spend`. This is "pay against proven outcome" from the shared gate,
+# so a pack no longer has to hand-roll verify-then-authorize.
+fn authorize_spend_gated(log :: tlog.Log, token_pub_b64 :: Str, token_raw :: Str, i :: gm.SpendIntent, exec :: (gm.SpendIntent) -> [net] Result[Str, Str], evidence :: Option[grel.Evidence]) -> [sql, time, net] Result[gm.SpendOutcome, Str] {
+  match gtoken.verify(token_pub_b64, token_raw) {
+    Err(e) => Err(str.concat("invalid budget token: ", e)),
+    Ok(bt) => gate.spend_gated(bt.policy, log, exec, i, evidence),
+  }
+}
+
+# Convenience: authorize a proof-gated spend through the mock rail.
+fn authorize_spend_gated_mock(log :: tlog.Log, token_pub_b64 :: Str, token_raw :: Str, i :: gm.SpendIntent, evidence :: Option[grel.Evidence]) -> [sql, time, net] Result[gm.SpendOutcome, Str] {
+  authorize_spend_gated(log, token_pub_b64, token_raw, i, mock_exec, evidence)
 }
 
 # A budget request a task carries as a param: the budget token (raw) + the intent.
