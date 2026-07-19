@@ -155,7 +155,7 @@ fn make_tools(tms_url :: Str, logistics_url :: Str, routing_url :: Str, telemetr
         s.optional(s.required_float("length_m", [])),
       ] },
       fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
-        let wps := match jv.parse(arg_str(args, "waypoints_json")) { Ok(j) => j, Err(_) => JArr([]) }
+        let wps := match jv.parse(arg_str(args, "waypoints_json")) { Ok(j) => j, Err(_) => JList([]) }
         let truck := JObj([
           ("weight_kg", JFloat(arg_float(args, "weight_kg"))),
           ("height_m",  JFloat(arg_float(args, "height_m"))),
@@ -178,7 +178,7 @@ fn make_tools(tms_url :: Str, logistics_url :: Str, routing_url :: Str, telemetr
       fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
         let origin := match jv.parse(arg_str(args, "origin_json"))      { Ok(j) => j, Err(_) => JObj([]) }
         let dest   := match jv.parse(arg_str(args, "destination_json")) { Ok(j) => j, Err(_) => JObj([]) }
-        let body   := jv.stringify(JObj([("waypoints", JArr([origin, dest]))]))
+        let body   := jv.stringify(JObj([("waypoints", JList([origin, dest]))]))
         match call_post(str.concat(routing_url, "/route"), body) {
           Err(e) => Err(e),
           Ok(route_j) => {
@@ -238,7 +238,7 @@ fn make_tools(tms_url :: Str, logistics_url :: Str, routing_url :: Str, telemetr
         s.optional(s.required_float("safety_buffer_pct", [])),
       ] },
       fn (args :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
-        let segs  := match jv.parse(arg_str(args, "segments_json")) { Ok(j) => j, Err(_) => JArr([]) }
+        let segs  := match jv.parse(arg_str(args, "segments_json")) { Ok(j) => j, Err(_) => JList([]) }
         let power  := arg_float(args, "max_charge_power_kw")
         let safety := arg_float(args, "safety_buffer_pct")
         let body  := jv.stringify(JObj([
