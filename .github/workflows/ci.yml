@@ -46,4 +46,48 @@ jobs:
         run: lex fmt --check src/ tests/
 
       - name: Run tests
-        run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc tests/
+        run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,env tests/
+
+  # The same suite against a real Postgres server (L-3). lex-soft is deployed on
+  # Postgres but every test opened `:memory:`, so the Postgres path was only ever
+  # asserted by argument. LEX_SOFT_PG_URL turns the opt-in trail test on; without
+  # it that one test reports SKIP and this job would pass without proving
+  # anything, so the URL is set here rather than left to the test's default.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lex
+          POSTGRES_PASSWORD: lex
+          POSTGRES_DB: lexsoft
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lex toolchain
+        run: |
+          set -euxo pipefail
+          LEX_VERSION="0.10.6"
+          BASE="https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}"
+          TARBALL="lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL -o /tmp/lex.tgz     "${BASE}/${TARBALL}"
+          curl -fsSL -o /tmp/lex.sha256  "${BASE}/${TARBALL}.sha256"
+          echo "$(cut -d' ' -f1 /tmp/lex.sha256)  /tmp/lex.tgz" | sha256sum -c -
+          tar -xzf /tmp/lex.tgz -C /tmp/
+          echo "/tmp/lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+
+      - name: Install package dependencies
+        run: lex pkg install
+
+      - name: Run tests against Postgres
+        env:
+          LEX_SOFT_PG_URL: postgres://lex:lex@127.0.0.1:5432/lexsoft
+        run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,env tests/
