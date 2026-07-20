@@ -1,141 +1,114 @@
 # lex-soft
 
-**Pure-lex agent runtime.** A re-architecture of [`soft`](https://github.com/alpibrusl/soft)
-where every layer — agent handlers, mailbox, spec gate, audit trace, A2A
-transport — is written in [lex-lang](https://github.com/alpibrusl/lex-lang).
-The original `soft` split agent code (lex) from runtime (Rust); lex-soft
-moves the runtime into lex too, using [lex-web](https://github.com/alpibrusl/lex-web)
-for HTTP, `std.sql` for persistence, and `std.http` for inter-agent calls.
+<!--
+  EXTERNAL NAME — the public/product name appears in exactly ONE place: the
+  tagline line directly below. The repo, package (`lex-soft` in lex.toml),
+  imports and module names are the stable technical identity and do not carry a
+  marketing name. When a public name is chosen, edit that single line; nothing
+  else in this repo needs to change.
+-->
+**The integration fabric for autonomous B2B agents.** One company's agents
+discover, connect to, and coordinate work with another company's agents across
+the org boundary — and because every step is provable, they can settle payment
+on evidence, not on trust.
 
-> **v0.1 — scaffold.** Shape is in place; the EV-fleet demo is ported
-> from `soft/agents/`. Some stdlib signatures (`std.http`, `std.sql`,
-> `lex-schema/json_value`) are pinned to what's in the public README of
-> each upstream — if a call doesn't compile against your local toolchain,
-> the surface needs a one-line fix, not a redesign. Requires lex-lang
-> 0.9.3+, lex-web 0.2+, lex-schema 0.1+.
+`lex-soft` is the domain-agnostic **engine**. It provides *mechanism*, never
+policy: identity, the cross-org agent mesh, discovery, trust, audit, metering,
+and evidence-gated settlement all live here. What the agents actually *do*
+(logistics, charging, cold-chain, construction, energy, …) lives in domain
+**packs** built on top — the core never names or depends on any one of them.
+Written entirely in [lex-lang](https://github.com/alpibrusl/lex-lang).
 
-## What's here
+## The model
 
-| Path | What |
-|------|------|
-| `src/action.lex`      | `Action` ADT — `SendA2a`, `NoOp` (`CallMcp`/`LocalLlm`/`CloudLlm` deferred — pure-lex doesn't host those yet) |
-| `src/message.lex`     | A2A envelope + lex-schema validator |
-| `src/state_store.lex` | SQL-backed per-agent state (JSON column keyed by agent name) |
-| `src/trace.lex`       | SQL-backed audit log — one row per `received` / `proposed` / `gate` / `executed` / `error` event |
-| `src/gate.lex`        | `Verdict = Allow \| Deny(reason) \| Inconclusive` + `check()` runner |
-| `src/a2a.lex`         | HTTP A2A sender (`std.http.post` against the peer URL map) |
-| `src/runner.lex`      | `step()` — load state → dispatch handler → run gate → execute action → save state + trace |
-| `src/llm_runner.lex`  | `run(tool_factory)` — generic agent tool-loop subprocess entry: reads `$LLM_REQ_FILE`, selects the lex-llm provider, runs `ag.run_loop`, prints `{text,tools}`. Apps supply only a tool-factory closure |
-| `src/agent.lex`       | `AgentDef` record + `mount(router, agent)` helper for lex-web |
-| `src/migrate.lex`     | SQL migrations for `agent_state` + `traces` |
-| `src/soft.lex`        | Facade re-exporting common types |
-| `examples/ev_fleet/`  | Port of `soft/agents/{vehicle,depot,pv,tms}` + the two `.spec` files as pure predicate functions |
-| `tests/`              | Pure-effect tests for gate + runner |
+Three things happen across the boundary between two companies:
 
-## Architecture (1 page)
+1. **Register & discover.** Each org publishes its agents and capabilities to a
+   federated directory; counterparties find each other by *capability*, not by a
+   hardcoded URL or a bespoke EDI integration.
+2. **Connect & coordinate.** Agents authenticate, form scoped relationships
+   (who may ask whom to do what), and run work agent-to-agent — dispatch,
+   custody handoffs, replenishment, approvals, whatever a pack defines.
+3. **Prove & settle.** Every action lands on a hash-chained, tamper-evident
+   trail. Settlement is **evidence-gated**: money moves only when the trail
+   re-verifies that the work was actually done. This is the flagship capability
+   — the reason it is safe to let cross-org coordination run autonomously.
 
-```
-┌──────────────────────────── lex serve (one process) ─────────────────────────┐
-│                                                                              │
-│  lex-web Router                                                              │
-│  ├─ POST /agents/vehicle/inbox   ─►  runner.step(vehicle_agent, msg)         │
-│  ├─ POST /agents/depot/inbox     ─►  runner.step(depot_agent,   msg)         │
-│  ├─ POST /agents/pv/inbox        ─►  runner.step(pv_agent,      msg)         │
-│  ├─ POST /agents/tms/inbox       ─►  runner.step(tms_agent,     msg)         │
-│  ├─ POST /agents/pv/tick         ─►  synthetic Tick message for pv           │
-│  └─ GET  /traces                 ─►  audit log readout                       │
-│                                                                              │
-│      runner.step                                                             │
-│      ──────────                                                              │
-│      1. state_store.load(db, agent)                ─[sql]                    │
-│      2. agent.dispatch(state_json, msg)            (pure handler)            │
-│      3. for action in proposed:                                              │
-│           gate.check(spec_fns, state, action)      (pure)                    │
-│           if Allow:                                                          │
-│              a2a.send(peer_url, action.payload)    ─[net]                    │
-│              trace.append(db, "executed")          ─[sql]                    │
-│           else:                                                              │
-│              trace.append(db, "gate.denied")       ─[sql]                    │
-│      4. state_store.save(db, agent, new_state)     ─[sql]                    │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+Integration and coordination are the category; evidence-gated settlement is the
+capability that makes automating it trustworthy.
 
-The original soft runtime is replaced piece-by-piece:
+## Capabilities (mechanism, host-mounted)
 
-| soft (Rust)                              | lex-soft (pure lex)                        |
-|------------------------------------------|--------------------------------------------|
-| `soft-agent::Runner` mailbox loop        | `src/runner.lex` + lex-web request handler |
-| `soft-a2a` HTTP server (`tiny_http`)     | lex-web `net.serve_fn`                     |
-| `soft-agent::Action` enum                | `src/action.lex` ADT                       |
-| `gate::evaluate_gate_compiled`           | `src/gate.lex` + pure predicate functions  |
-| `lex_store::Store` (filesystem trace)    | `src/trace.lex` (SQL trace table)          |
-| `.spec` parser + `spec_checker` crate    | predicates as ordinary lex `fn`s            |
-| `serde_json::Value` agent state          | JSON `Str` column in SQLite                |
+Everything is a host-opt-in `mount_*(router, db, …)` module — a host wires in
+only what it needs, and supplies its own policy and data. The core ships no
+product vocabulary.
 
-## Specs as predicates, not a separate DSL
+| Modules | What it provides |
+|---|---|
+| `identity`, `partner_auth`, `conn_token` | Signed org/agent identity, partner authentication, scoped connection tokens |
+| `mesh`, `a2a`, `registry`, `federation`, `matchmaking`, `schema_registry` | Cross-org agent mesh: register, discover by capability, message over A2A, federate between nodes |
+| `relationships`, `arm`, `trust`, `resolver` | Agent relationship management: scoped roles, trust profiles, intent→role resolution (host-supplied vocab) |
+| `verdict`, `settlement`, `spend` | Evidence-gated settlement: re-derive proof over the trail, then gate spend on it |
+| `audit`, `trace`, `observability` | Tenant-scoped audit API, hash-chained interaction trace, observability |
+| `metering` | Usage metering + billing preview against host-supplied plans |
+| `notifications`, `escalation`, `human_gateway` | Alerting bus and human-in-the-loop approvals for actions agents can't decide alone |
+| `scheduler`, `outbox` | Recurring agent prompts and reliable outbound delivery |
+| `pack` | The domain-pack SDK — `mount_pack(...)` adds a vertical without touching the core |
+| `dsr` | Data-subject-rights (GDPR) export/erase |
+| `device_http` | Signed device ingest for edge readings |
+| `pool`, `platform/*`, `a2a_dashboard` | Hosted-agent pool, platform server/inbox/client, and an operator dashboard |
 
-The original `soft` had a `.spec` mini-DSL parsed by `spec_checker`. In
-lex-soft, a spec is just a pure lex function:
+See `src/soft.lex` for the facade re-exporting the common types.
+
+## Domain packs (built on top, not in here)
+
+A **pack** is a self-contained vertical mounted via `mount_pack` — its own
+tables, endpoints, capabilities and settlement rules, with zero core changes.
+Packs live in their own repos, never in `lex-soft`. Examples that consume this
+engine: EV-fleet logistics, charging/roaming, cold-chain custody, intermodal
+container custody, agri-food traceability, construction milestones, and energy
+flexibility. Each is one product on the same engine — swap the pack, keep the
+identity/mesh/trust/settlement machinery underneath.
+
+## Open core
+
+The **mechanism** is public — this repo plus the shared libraries it builds on
+([lex-web](https://github.com/alpibrusl/lex-web),
+[lex-schema](https://github.com/alpibrusl/lex-schema),
+[lex-agent](https://github.com/alpibrusl/lex-agent),
+[lex-trail](https://github.com/alpibrusl/lex-trail),
+[lex-guard](https://github.com/alpibrusl/lex-guard),
+[lex-device-identity](https://github.com/alpibrusl/lex-device-identity),
+[lex-crypto](https://github.com/alpibrusl/lex-crypto)). The **products** (the
+packs and their consoles) are separate. Nothing product-specific — no URL field,
+role vocabulary, plan tier, or integration name — belongs in this repo.
+
+## Build on it
+
+A host process composes the capabilities it wants and mounts its packs:
 
 ```lex
-# Original (soft/agents/depot.spec):
-spec depot_grid_budget {
-  forall s :: { current_kw :: Float, budget_kw :: Float, pv_kw :: Float },
-         a :: { power_kw :: Float }:
-    s.current_kw + a.power_kw <= s.budget_kw + s.pv_kw
-}
-
-# lex-soft (examples/ev_fleet/specs.lex):
-fn depot_grid_budget(
-  s :: { current_kw :: Float, budget_kw :: Float, pv_kw :: Float },
-  a :: { power_kw :: Float },
-) -> Bool {
-  s.current_kw + a.power_kw <= s.budget_kw + s.pv_kw
-}
+# host main.lex (sketch)
+let r0 := router.new()
+let r1 := identity.mount(r0, db, sign_seed, admin_key)   # signed identity
+let r2 := mesh.mount(r1, db)                              # register + discover
+let r3 := audit.mount(r2, db, org, version, admin_key)   # tenant-scoped audit
+let r4 := metering.mount(r3, db, secret, plan_catalog)   # usage + billing
+let r5 := pack.mount_pack(r4, db, my_pack, fed_cfg)      # a vertical
+net.serve_fn(r5, port)
 ```
 
-`gate.check` calls these predicate functions over each proposed action's
-payload. No parser, no FFI, no extra crate — and you still get `lex spec`
-property-checking for free since they're regular lex functions.
-
-## Running the EV fleet demo
-
-```bash
-# From examples/ev_fleet/:
-lex run --allow-effects io,net,time,sql,fs_write,rand main.lex main
-
-# Send a Dispatch to the vehicle:
-curl -X POST http://localhost:8080/agents/vehicle/inbox \
-  -H 'content-type: application/json' \
-  -d '{"from":"ops","topic":"Dispatch","payload_json":"{}"}'
-
-# Tick the PV agent:
-curl -X POST http://localhost:8080/agents/pv/tick
-
-# Read the audit trace:
-curl http://localhost:8080/traces
-```
+Signatures vary per module — check each `src/<module>.lex` header. The bundled
+`examples/demo.sh` exercises a minimal end-to-end node; `tests/` holds
+pure-effect tests per capability (`lex test`).
 
 ## Status
 
-| Capability | Status | Notes |
-|---|---|---|
-| Agent runtime (dispatch / gate / trace / state) in pure lex | **Scaffold** | EV-fleet end-to-end ported; v1 SQLite backend |
-| Spec gate as pure predicate fns | **Scaffold** | Replaces `.spec` DSL + spec-checker crate |
-| A2A over HTTP (`std.http` + lex-web) | **Scaffold** | One sub-router per agent |
-| `CallMcp` / `LocalLlm` / `CloudLlm` actions | **Deferred** | `soft-runner` provided these; pure-lex needs MCP-over-HTTP first |
-| Content-addressed audit graph (`lex-store` parity) | **Deferred** | v1 uses SQL trace; structural-merge audit deferred |
-| lex-orm persistence (replace direct `std.sql`) | **Pending repo access** | wire-up planned for v0.2 |
-| Tick scheduler (replace `--tick Tick=2s` in soft-runner) | **Deferred** | v1 uses manual `POST /agents/pv/tick`; lifespan-backed background loop coming |
-
-## Why not just port `lex-store` to lex too?
-
-The structural-merge / Operation-log / SigId surface in `lex-store` is
-large and load-bearing for the *language* — it deserves its own lex
-port rather than being grown inside lex-soft. v1 here uses a flat SQL
-trace table; once `lex-store` has a pure-lex implementation, swap
-`src/trace.lex` for it.
+The engine is well past scaffold: identity, the cross-org mesh + federation,
+ARM/trust, audit, metering, alerting, human-gateway approvals, the pack SDK, and
+evidence-gated settlement are all implemented and exercised by real product
+packs. It is still evolving — treat module signatures as the source of truth
+over prose, and expect the surface to grow. Requires lex-lang 0.10.6+.
 
 ## License
 
