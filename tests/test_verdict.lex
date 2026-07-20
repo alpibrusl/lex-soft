@@ -130,8 +130,29 @@ fn rank_sinks_disqualified() -> [sql, fs_read, fs_write, time] Result[Unit, Str]
   }
 }
 
+# H-1: an unregistered capability must NOT verify. The /verify endpoint builds a
+# fail-closed verdict (verified:false, spec_applied:false) even over an intact,
+# linked trail, and spec_applied distinguishes "no spec checked" from "spec passed".
+fn unregistered_capability_fails_closed() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let log := settlement.trail_on(db)
+      let tid := build_trail(log, true, false)
+      let with_spec := verdict.verify(log, tid, Some(grant_spec()), "outcome")
+      let integrity := verdict.verify(log, tid, None, "outcome")
+      let closed := verdict.no_spec_verdict(integrity, "cap.unknown")
+      if with_spec.spec_applied and not integrity.spec_applied and not closed.verified and not closed.spec_applied and closed.intact {
+        Ok(())
+      } else {
+        Err("unregistered capability must fail closed with spec_applied=false")
+      }
+    },
+  }
+}
+
 fn run_all() -> [sql, fs_read, fs_write, time] Unit {
-  let results := [honest_trail_verifies(), forged_out_of_grant_is_illegal(), tampered_trail_not_intact(), no_spec_defaults_legal(), rank_sinks_disqualified()]
+  let results := [honest_trail_verifies(), forged_out_of_grant_is_illegal(), tampered_trail_not_intact(), no_spec_defaults_legal(), rank_sinks_disqualified(), unregistered_capability_fails_closed()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
