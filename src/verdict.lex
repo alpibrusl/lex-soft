@@ -45,7 +45,12 @@ import "std.str" as str
 
 import "./settlement" as settlement
 
-type Verdict = { intact :: Bool, linked :: Bool, legal :: Bool, verified :: Bool, score :: Int, reason :: Str }
+# `spec_applied` distinguishes "the legality spec passed" from "no legality spec
+# was checked" — so a consumer can never mistake integrity-only for a full
+# verdict. The /verify endpoint fails CLOSED when money is gated and no spec is
+# registered (H-1); `verify` itself stays the mechanism (internal callers may
+# legitimately pass None for an integrity-only re-derivation).
+type Verdict = { intact :: Bool, linked :: Bool, legal :: Bool, verified :: Bool, spec_applied :: Bool, score :: Int, reason :: Str }
 
 # ---- JSON → SpecValue (a recorded outcome becomes spec bindings) ----
 fn to_specvalue(j :: jv.Json) -> sp.SpecValue {
@@ -164,7 +169,11 @@ fn verify(log :: tlog.Log, trail_id :: Str, spec :: Option[sp.Spec], binding :: 
   } else {
     0
   }
-  { intact: i, linked: l, legal: lg, verified: v, score: sc, reason: reason_of(i, l, lg) }
+  let applied := match spec {
+    Some(_) => true,
+    None => false,
+  }
+  { intact: i, linked: l, legal: lg, verified: v, spec_applied: applied, score: sc, reason: reason_of(i, l, lg) }
 }
 
 # Shared arena ordering key (verified by score; DQ sinks) — see lex-games rank.
@@ -173,7 +182,7 @@ fn rank_key(v :: Verdict) -> Int {
 }
 
 fn verdict_json(v :: Verdict) -> Str {
-  jv.stringify(JObj([("intact", JBool(v.intact)), ("linked", JBool(v.linked)), ("legal", JBool(v.legal)), ("verified", JBool(v.verified)), ("score", JInt(v.score)), ("reason", JStr(v.reason))]))
+  jv.stringify(JObj([("intact", JBool(v.intact)), ("linked", JBool(v.linked)), ("legal", JBool(v.legal)), ("verified", JBool(v.verified)), ("spec_applied", JBool(v.spec_applied)), ("score", JInt(v.score)), ("reason", JStr(v.reason))]))
 }
 
 # ── /verify endpoint ──────────────────────────────────────────────────────────
@@ -201,25 +210,41 @@ fn find_spec(specs :: List[CapSpec], cid :: Str) -> Option[CapSpec] {
   })
 }
 
+# Build a fail-closed verdict from an integrity-only re-derivation: report the
+# real intact/linked, but `verified:false` because no legality spec was applied.
+fn no_spec_verdict(base :: Verdict, cid :: Str) -> Verdict {
+  { intact: base.intact, linked: base.linked, legal: false, verified: false, spec_applied: false, score: 0, reason: str.concat("no legality spec registered for capability ", cid) }
+}
+
 # Mount POST /verify — body `{trail_id, capability_id}` → re-derived verdict.
-# The legality spec for a capability is resolved from `specs` (domain data); an
-# unknown/absent capability_id verifies integrity only (no legal spec applied).
+# FAILS CLOSED (H-1): when a capability_id is given but no spec is registered for
+# it, the verdict is `verified:false` (integrity may still be reported), never a
+# silent integrity-only pass. `capability_id` is required unless the caller
+# explicitly asks for integrity-only with `{"mode":"integrity_only"}`.
 fn mount_verify(r :: router.Router, db :: Db, specs :: List[CapSpec]) -> router.Router {
   router.route_effectful(r, "POST", "/verify", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
         let trail_id := jstr(j, "trail_id")
+        let cid := jstr(j, "capability_id")
+        let mode := jstr(j, "mode")
         if str.is_empty(trail_id) {
           resp.bad_request("{\"error\":\"trail_id is required\"}")
         } else {
-          let cid := jstr(j, "capability_id")
-          let log := settlement.trail_on(db)
-          let v := match find_spec(specs, cid) {
-            Some(cs) => verify(log, trail_id, Some(cs.spec), cs.binding),
-            None => verify(log, trail_id, None, "outcome"),
+          if str.is_empty(cid) and mode != "integrity_only" {
+            resp.bad_request("{\"error\":\"capability_id is required (or set mode=integrity_only to check chain integrity without a legality spec)\"}")
+          } else {
+            let log := settlement.trail_on(db)
+            if mode == "integrity_only" {
+              resp.json(verdict_json(verify(log, trail_id, None, "outcome")))
+            } else {
+              match find_spec(specs, cid) {
+                Some(cs) => resp.json(verdict_json(verify(log, trail_id, Some(cs.spec), cs.binding))),
+                None => resp.json(verdict_json(no_spec_verdict(verify(log, trail_id, None, "outcome"), cid))),
+              }
+            }
           }
-          resp.json(verdict_json(v))
         }
       },
     }
