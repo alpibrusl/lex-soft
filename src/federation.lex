@@ -58,6 +58,8 @@ import "./partner_auth" as pa
 
 import "./settlement" as settlement
 
+import "lex-trail/log" as tlog
+
 import "./conn_token" as conn_token
 
 import "./identity" as identity
@@ -77,7 +79,13 @@ import "./notifications" as notifications
 #   sign_seed    ed25519 seed for the deployment identity (distinct from secret)
 #   pub_b64      base64 ed25519 public key matching sign_seed
 #   require_token  if true, inbound A2A dispatch requires a valid conn token
-type FederationConfig = { base :: Str, org :: Str, secret :: Bytes, ttl :: Int, sign_seed :: Bytes, pub_b64 :: Str, require_token :: Bool }
+# `signup_token` gates onboarding (H-2): a required field so a host cannot deploy
+# an OPEN credential-issuance endpoint by accident. When non-empty, POST
+# /connections must present a matching `signup_token`; empty means open (dev only
+# — do NOT expose an empty-token deployment to the internet). Proof-of-org
+# (challenge/response against the org's published key) is the stronger, follow-on
+# gate; the shared signup token stops anonymous issuance now.
+type FederationConfig = { base :: Str, org :: Str, secret :: Bytes, ttl :: Int, sign_seed :: Bytes, pub_b64 :: Str, require_token :: Bool, signup_token :: Str }
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
 fn jstr(j :: jv.Json, key :: Str) -> Str {
@@ -131,20 +139,24 @@ fn hour_bucket(now_str :: Str) -> Str {
 }
 
 # Bump this org's counter for the current hour and report whether it is still
-# within budget. Fails OPEN on a storage error — a rate-limit hiccup should not
-# block legitimate onboarding.
+# within budget. Fails CLOSED on a storage error (M-1): a rate-limit that can't
+# be evaluated must deny, not wave the request through — returning 429 is safer
+# than issuing credentials under DB pressure (the flood's own feedback loop).
+# NOTE: still keyed on the caller-supplied `org`; keying off source IP/identity
+# needs the transport to expose it (ctx has no header accessor today) and is a
+# follow-on. A global issuance ceiling is a further backstop.
 fn rate_limited(db :: Db, req_org :: Str, now_str :: Str) -> [sql, fs_read, fs_write] Bool {
   let w := hour_bucket(now_str)
   let ins := "INSERT INTO connection_rate (org, \"window\", count) VALUES (?, ?, 1) ON CONFLICT(org, \"window\") DO UPDATE SET count = connection_rate.count + 1"
   match sql.exec(db, ins, [PStr(req_org), PStr(w)]) {
-    Err(_) => false,
+    Err(_) => true,
     Ok(_) => {
       let sel := "SELECT count FROM connection_rate WHERE org=? AND \"window\"=?"
       let rows :: Result[List[{ count :: Int }], SqlError] := sql.query(db, sel, [PStr(req_org), PStr(w)])
       match rows {
-        Err(_) => false,
+        Err(_) => true,
         Ok(rs) => match list.head(rs) {
-          None => false,
+          None => true,
           Some(r) => r.count > max_per_hour(),
         },
       }
@@ -154,6 +166,17 @@ fn rate_limited(db :: Db, req_org :: Str, now_str :: Str) -> [sql, fs_read, fs_w
 
 fn rate_limited_response() -> resp.Response {
   { status: 429, body: "{\"error\":\"too many onboarding attempts for this org this hour, try again later\"}", headers: map.from_list([("content-type", "application/json")]) }
+}
+
+# H-2: onboarding refused for lack of a valid signup token.
+fn signup_refused_response() -> resp.Response {
+  { status: 401, body: "{\"error\":\"onboarding requires a valid signup_token\"}", headers: map.from_list([("content-type", "application/json")]) }
+}
+
+# L-2: the credential store failed — fail the request rather than issue an
+# unrevocable, unattributable token. The caller should retry.
+fn credential_error_response() -> resp.Response {
+  { status: 503, body: "{\"error\":\"could not issue an audit-resolvable credential right now; please retry\"}", headers: map.from_list([("content-type", "application/json")]) }
 }
 
 # The body of POST /connections once the rate-limit gate passes: register the
@@ -222,13 +245,15 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
         ()
       },
     }
-    let issued := match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
-      Ok(ic) => ic.token,
-      Err(_) => conn_token.issue(cfg.secret, org, req_org, scope, cfg.ttl, str.concat("jti_", crypto.random_str_hex(12)), time.now()),
+    match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
+      Err(_) => credential_error_response(),
+      Ok(ic) => {
+        let __ev := tlog.append(settlement.trail_on(db), "credential.issued", None, jv.stringify(JObj([("agent", JStr(req_org)), ("org", JStr(req_org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents)))])))
+        resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(ic.token)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
+          agentref_json(a, base)
+        })))])))
+      },
     }
-    resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(issued)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
-      agentref_json(a, base)
-    })))])))
   }
 }
 
@@ -578,10 +603,14 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
         let req_org := jstr(j, "org")
-        if rate_limited(db, req_org, time.now_str()) {
-          rate_limited_response()
+        if not str.is_empty(cfg.signup_token) and jstr(j, "signup_token") != cfg.signup_token {
+          signup_refused_response()
         } else {
-          onboard_connection(db, cfg, org, base, j, req_org)
+          if rate_limited(db, req_org, time.now_str()) {
+            rate_limited_response()
+          } else {
+            onboard_connection(db, cfg, org, base, j, req_org)
+          }
         }
       },
     }
