@@ -253,10 +253,10 @@ fn billing_json(p :: PlanPrice, tasks :: Int) -> jv.Json {
   JObj([("plan", JStr(p.plan)), ("base_eur_month", JFloat(p.base_eur_month)), ("included_tasks", JInt(p.included_tasks)), ("tasks_used", JInt(tasks)), ("overage_tasks", JInt(over)), ("overage_eur_task", JFloat(p.overage_eur_task)), ("overage_eur", JFloat(overage_eur)), ("estimated_eur_month", JFloat(p.base_eur_month + overage_eur)), ("period", JStr("all_time_mvp"))])
 }
 
-fn usage_response(db :: Db, secret :: Bytes, catalog :: List[PlanPrice], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+fn usage_response(db :: Db, secrets :: List[Bytes], catalog :: List[PlanPrice], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
-    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"usage lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => match usage_for(db, subj.org) {
@@ -281,9 +281,9 @@ fn usage_response(db :: Db, secret :: Bytes, catalog :: List[PlanPrice], c :: ct
 # Host opt-in: mount GET /usage. `secret` is the same federation secret
 # credentials are issued under (identity.resolve_subject). `catalog` carries
 # the host's commercial terms per plan — pass [] for counters-only.
-fn mount(r :: router.Router, db :: Db, secret :: Bytes, catalog :: List[PlanPrice]) -> router.Router {
+fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes], catalog :: List[PlanPrice]) -> router.Router {
   router.route_effectful(r, "GET", "/usage", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    usage_response(db, secret, catalog, c)
+    usage_response(db, secrets, catalog, c)
   })
 }
 
