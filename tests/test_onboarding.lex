@@ -35,6 +35,10 @@ import "../src/identity" as identity
 
 import "../src/audit" as audit
 
+import "../src/partner_auth" as pa
+
+import "lex-crypto/src/ed25519" as ed
+
 # A registry lookup failure is a test failure, not an empty slice — unwrap here
 # so the assertions below stay about tenancy.
 fn ids_of(db :: Db, org :: Str) -> [sql, fs_read] List[Str] {
@@ -194,8 +198,78 @@ fn bool_s(b :: Bool) -> Str {
   }
 }
 
+# H-2 end to end: POST /connections carrying a public_key it has not proved is
+# refused outright, and binds nothing. Refusing rather than onboarding-without-
+# the-key matters — proceeding would leave the caller believing its key is
+# bound, and every partner token it later signed would be rejected with no clue
+# why.
+fn an_unproved_key_refuses_the_whole_request() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let r := fed.mount_federation(router.new(), db, cfg)
+      let body := jv.stringify(JObj([("org", JStr("impostor")), ("scope", JStr("logistics")), ("public_key", JStr("not-a-proved-key")), ("agents", JList([]))]))
+      let res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
+      let bound := match pa.get_key(db, "impostor") {
+        None => false,
+        Some(_) => true,
+      }
+      if res.status == 403 and not bound {
+        Ok(())
+      } else {
+        Err(str.concat("unproved key not refused: status=", str.concat(int.to_str(res.status), if bound {
+          " and a key was bound"
+        } else {
+          ""
+        })))
+      }
+    },
+  }
+}
+
+# The honest path still works over HTTP: take a challenge, sign it, onboard.
+fn a_proved_key_onboards() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let r := fed.mount_federation(router.new(), db, cfg)
+      let seed := crypto.sha256(bytes.from_str("partner"))
+      let pub := match ed.public_key_b64(seed) {
+        Ok(p) => p,
+        Err(_) => "",
+      }
+      let ch := router.dispatch(r, { body: jv.stringify(JObj([("org", JStr("partner-co"))])), method: "POST", path: "/connections/challenge", query: "", headers: map.new() })
+      let nonce := match jv.parse(ch.body) {
+        Err(_) => "",
+        Ok(cj) => match jv.get_field(cj, "challenge") {
+          Some(JStr(n)) => n,
+          _ => "",
+        },
+      }
+      let proof := match ed.sign_text(seed, nonce) {
+        Ok(sg) => sg,
+        Err(_) => "",
+      }
+      let body := jv.stringify(JObj([("org", JStr("partner-co")), ("scope", JStr("logistics")), ("public_key", JStr(pub)), ("key_proof", JStr(proof)), ("challenge", JStr(nonce)), ("agents", JList([]))]))
+      let res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
+      match pa.get_key(db, "partner-co") {
+        Some(k) => if res.status == 200 and k == pub {
+          Ok(())
+        } else {
+          Err(str.concat("proved key onboarding wrong: status=", int.to_str(res.status)))
+        },
+        None => Err(str.concat("a proved key was not bound; status=", int.to_str(res.status))),
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan(), onboarded_agent_lands_in_its_org_tenant()]
+  let results := [an_unproved_key_refuses_the_whole_request(), a_proved_key_onboards(), onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan(), onboarded_agent_lands_in_its_org_tenant()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

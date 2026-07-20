@@ -135,6 +135,24 @@ fn exec_ddl_tolerant(db :: Db, stmt :: Str) -> [sql, fs_write] Unit {
   ()
 }
 
+# federation.init_directory declares these three, but nothing ever called it —
+# so on a real node partner_keys and org_directory did not exist. Every
+# partner_auth lookup therefore hit a missing table and denied (get_key maps an
+# error to None), which is fail-closed and safe, but it meant the Ed25519
+# partner path was dead rather than merely unused. Created here so the schema
+# a deployment actually gets matches the one the code expects.
+fn ddl_partner_keys() -> Str {
+  "CREATE TABLE IF NOT EXISTS partner_keys (org TEXT PRIMARY KEY, public_key TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')"
+}
+
+fn ddl_partner_challenges() -> Str {
+  "CREATE TABLE IF NOT EXISTS partner_challenges (nonce TEXT PRIMARY KEY, org TEXT NOT NULL, expires_ms BIGINT NOT NULL, used INTEGER NOT NULL DEFAULT 0)"
+}
+
+fn ddl_org_directory() -> Str {
+  "CREATE TABLE IF NOT EXISTS org_directory (org TEXT PRIMARY KEY, catalog_url TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', public_key TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
+}
+
 fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   match exec_ddl(db, ddl_agents()) {
     Err(e) => Err(e),
@@ -174,6 +192,9 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __notifi := exec_ddl_tolerant(db, ddl_notifications_idx())
                 let __notifai := exec_ddl_tolerant(db, ddl_notifications_acct_idx())
                 let __devcerts := exec_ddl_tolerant(db, ddl_device_certs())
+                let __pkeys := exec_ddl_tolerant(db, ddl_partner_keys())
+                let __pchal := exec_ddl_tolerant(db, ddl_partner_challenges())
+                let __odir := exec_ddl_tolerant(db, ddl_org_directory())
                 jobs.init_schema(db)
               },
             },

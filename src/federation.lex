@@ -233,10 +233,10 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
       register_peer_json(db, aj, req_org, link_from, role, contract)
     })
     let partner_key := jstr(j, "public_key")
-    let __pk := if str.is_empty(partner_key) {
+    let key_binding := if str.is_empty(partner_key) {
       Ok(())
     } else {
-      pa.cache_key(db, req_org, partner_key)
+      pa.bind_key(db, req_org, partner_key, jstr(j, "key_proof"), jstr(j, "rotation_proof"), jstr(j, "challenge"), time.now_ms())
     }
     let __acct := match existing {
       Ok(Some(_)) => (),
@@ -245,16 +245,27 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
         ()
       },
     }
-    match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
-      Err(_) => credential_error_response(),
-      Ok(ic) => {
-        let __ev := tlog.append(settlement.trail_on(db), "credential.issued", None, jv.stringify(JObj([("agent", JStr(req_org)), ("org", JStr(req_org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents)))])))
-        resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(ic.token)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
-          agentref_json(a, base)
-        })))])))
+    match key_binding {
+      Err(why) => key_binding_refused_response(why),
+      Ok(_) => match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
+        Err(_) => credential_error_response(),
+        Ok(ic) => {
+          let __ev := tlog.append(settlement.trail_on(db), "credential.issued", None, jv.stringify(JObj([("agent", JStr(req_org)), ("org", JStr(req_org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents)))])))
+          resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(ic.token)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
+            agentref_json(a, base)
+          })))])))
+        },
       },
     }
   }
+}
+
+# A key was offered but not proved. Refusing the whole request rather than
+# onboarding without the key: proceeding would leave the caller believing its
+# key is bound when it is not, and every partner token it later signs would be
+# rejected with no clue why.
+fn key_binding_refused_response(why :: Str) -> resp.Response {
+  { status: 403, body: jv.stringify(JObj([("error", JStr("partner key not bound")), ("reason", JStr(why))])), headers: map.from_list([("content-type", "application/json")]) }
 }
 
 fn unauthorized_response() -> resp.Response {
@@ -442,7 +453,10 @@ type DirRow = { org :: Str, catalog_url :: Str, capabilities :: Str, public_key 
 fn init_directory(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   match sql.exec(db, "CREATE TABLE IF NOT EXISTS org_directory (org TEXT PRIMARY KEY, catalog_url TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', public_key TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')", []) {
     Err(e) => Err(e.message),
-    Ok(_) => pa.init(db),
+    Ok(_) => match pa.init(db) {
+      Err(e) => Err(e),
+      Ok(_) => pa.init_challenges(db),
+    },
   }
 }
 
@@ -614,7 +628,27 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
       },
     }
   })
-  let with_dir_post := router.route_effectful(with_conn, "POST", "/directory", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_chal := router.route_effectful(with_conn, "POST", "/connections/challenge", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    match jv.parse(c.body) {
+      Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
+      Ok(j) => {
+        let ch_org := jstr(j, "org")
+        if not str.is_empty(cfg.signup_token) and jstr(j, "signup_token") != cfg.signup_token {
+          signup_refused_response()
+        } else {
+          if str.is_empty(ch_org) {
+            resp.bad_request("{\"error\":\"org is required\"}")
+          } else {
+            match pa.issue_challenge(db, ch_org, time.now_ms()) {
+              Err(_) => resp.json_status(503, "{\"error\":\"could not issue a challenge\"}"),
+              Ok(nonce) => resp.json(jv.stringify(JObj([("org", JStr(ch_org)), ("challenge", JStr(nonce)), ("expires_in_ms", JInt(pa.challenge_ttl_ms())), ("sign", JStr("ed25519 over the challenge string; send it back as key_proof"))]))),
+            }
+          }
+        }
+      },
+    }
+  })
+  let with_dir_post := router.route_effectful(with_chal, "POST", "/directory", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
