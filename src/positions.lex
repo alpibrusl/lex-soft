@@ -96,13 +96,34 @@ fn vocabulary_json() -> jv.Json {
 # request field without reading the pack's source.
 type PartySlot = { position :: Str, name :: Str, title :: Str, field :: Str, required :: Bool }
 
+# How one party stands to another. Kept to a small shared list rather than
+# per-domain words: relationship roles are what peer discovery filters on, so a
+# domain inventing its own vocabulary would make its edges invisible to every
+# generic query. Each role is the position pairing that produces it.
+fn edge_roles() -> List[Str] {
+  ["contracted", "dispatch", "custody", "reporting", "attestation", "settlement"]
+}
+
+fn is_edge_role(id :: Str) -> Bool {
+  not list.is_empty(list.filter(edge_roles(), fn (r :: Str) -> Bool {
+    r == id
+  }))
+}
+
+# A standing relationship between two PARTIES of a domain — "the shipper tenders
+# to the carrier" — named by party, not by tenant. It is a TEMPLATE: onboarding
+# creates the edge only between agents that actually exist, so an org playing
+# one side gets nothing until its counterparty is known. Cross-org edges are
+# formed after discovery, not assumed here.
+type PartyEdge = { from :: Str, to :: Str, role :: Str, label :: Str }
+
 # `subject` is what the flow is about in this domain's words, and
 # `subject_ref_field` the key that identifies one. `custody_ref_field` is
 # recorded separately and deliberately: a domain may address its subject by one
 # name in its own API while the shared custody chain keys it by another, and a
 # manifest that hid that difference would send integrators to the wrong field.
 # Empty means the domain has no custody chain.
-type PackManifest = { id :: Str, title :: Str, tagline :: Str, pattern :: Str, subject :: Str, subject_ref_field :: Str, custody_ref_field :: Str, parties :: List[PartySlot], event_kinds :: List[Str], evidence_kinds :: List[Str], settles :: Bool, route_prefix :: Str }
+type PackManifest = { id :: Str, title :: Str, tagline :: Str, pattern :: Str, subject :: Str, subject_ref_field :: Str, custody_ref_field :: Str, parties :: List[PartySlot], relationships :: List[PartyEdge], event_kinds :: List[Str], evidence_kinds :: List[Str], settles :: Bool, route_prefix :: Str }
 
 fn party_json(p :: PartySlot) -> jv.Json {
   JObj([("position", JStr(p.position)), ("name", JStr(p.name)), ("title", JStr(p.title)), ("field", JStr(p.field)), ("required", JBool(p.required))])
@@ -114,8 +135,12 @@ fn strs_json(xs :: List[Str]) -> jv.Json {
   }))
 }
 
+fn edge_json(e :: PartyEdge) -> jv.Json {
+  JObj([("from", JStr(e.from)), ("to", JStr(e.to)), ("role", JStr(e.role)), ("label", JStr(e.label))])
+}
+
 fn manifest_json(m :: PackManifest) -> jv.Json {
-  JObj([("id", JStr(m.id)), ("title", JStr(m.title)), ("tagline", JStr(m.tagline)), ("pattern", JStr(m.pattern)), ("subject", JStr(m.subject)), ("subject_ref_field", JStr(m.subject_ref_field)), ("custody_ref_field", JStr(m.custody_ref_field)), ("parties", JList(list.map(m.parties, party_json))), ("event_kinds", strs_json(m.event_kinds)), ("evidence_kinds", strs_json(m.evidence_kinds)), ("settles", JBool(m.settles)), ("route_prefix", JStr(m.route_prefix))])
+  JObj([("id", JStr(m.id)), ("title", JStr(m.title)), ("tagline", JStr(m.tagline)), ("pattern", JStr(m.pattern)), ("subject", JStr(m.subject)), ("subject_ref_field", JStr(m.subject_ref_field)), ("custody_ref_field", JStr(m.custody_ref_field)), ("parties", JList(list.map(m.parties, party_json))), ("relationships", JList(list.map(m.relationships, edge_json))), ("event_kinds", strs_json(m.event_kinds)), ("evidence_kinds", strs_json(m.evidence_kinds)), ("settles", JBool(m.settles)), ("route_prefix", JStr(m.route_prefix))])
 }
 
 # Each repeated name reported ONCE, not once per occurrence — three slots
@@ -134,6 +159,12 @@ fn dupe_party_names(ps :: List[PartySlot]) -> List[Str] {
       acc
     }
   })
+}
+
+fn has_party(m :: PackManifest, name :: Str) -> Bool {
+  not list.is_empty(list.filter(m.parties, fn (p :: PartySlot) -> Bool {
+    p.name == name
+  }))
 }
 
 # Every way a manifest can be wrong, as a list of messages — empty means valid.
@@ -168,7 +199,30 @@ fn validate(m :: PackManifest) -> List[Str] {
   let dupes := list.map(dupe_party_names(m.parties), fn (n :: Str) -> Str {
     str.concat("duplicate party name: ", n)
   })
-  list.concat(base, list.concat(pat, list.concat(empty, list.concat(unknown, list.concat(unnamed, dupes)))))
+  let edges := list.fold(m.relationships, [], fn (acc :: List[Str], e :: PartyEdge) -> List[Str] {
+    let bad_from := if has_party(m, e.from) {
+      []
+    } else {
+      [str.join(["relationship from unknown party '", e.from, "'"], "")]
+    }
+    let bad_to := if has_party(m, e.to) {
+      []
+    } else {
+      [str.join(["relationship to unknown party '", e.to, "'"], "")]
+    }
+    let bad_role := if is_edge_role(e.role) {
+      []
+    } else {
+      [str.join(["relationship '", e.from, "->", e.to, "' has unknown role '", e.role, "'"], "")]
+    }
+    let self_edge := if e.from == e.to {
+      [str.join(["relationship '", e.from, "' points at itself"], "")]
+    } else {
+      []
+    }
+    list.concat(acc, list.concat(bad_from, list.concat(bad_to, list.concat(bad_role, self_edge))))
+  })
+  list.concat(base, list.concat(pat, list.concat(empty, list.concat(unknown, list.concat(unnamed, list.concat(dupes, edges))))))
 }
 
 fn is_valid(m :: PackManifest) -> Bool {
