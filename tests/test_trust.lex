@@ -87,11 +87,13 @@ fn chargebacks_meter_per_account() -> [sql, fs_read, fs_write, time, random] Res
       let log := settlement.trail_on(db)
       let __c1 := settlement.record_chargeback(log, "retail-01", "charging-01", 10.8, "EUR", "cdr-1")
       let __c2 := settlement.record_chargeback(log, "retail-01", "charging-01", 17.6, "EUR", "cdr-2")
-      let u := metering.usage_for(db, "hyper")
-      if u.chargeback_count == 2 and u.chargeback_total > 28.3 and u.chargeback_total < 28.5 {
-        Ok(())
-      } else {
-        Err(str.concat("chargeback aggregate wrong: count/total = ", str.concat(int.to_str(u.chargeback_count), str.concat("/", float.to_str(u.chargeback_total)))))
+      match metering.usage_for(db, "hyper") {
+        Err(e) => Err(str.concat("usage_for failed: ", e)),
+        Ok(u) => if u.chargeback_count == 2 and u.chargeback_total > 28.3 and u.chargeback_total < 28.5 {
+          Ok(())
+        } else {
+          Err(str.concat("chargeback aggregate wrong: count/total = ", str.concat(int.to_str(u.chargeback_count), str.concat("/", float.to_str(u.chargeback_total)))))
+        },
       }
     },
   }

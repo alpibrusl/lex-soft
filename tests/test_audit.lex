@@ -27,6 +27,15 @@ import "../src/audit" as audit
 
 import "../src/human_gateway" as hg
 
+# A registry lookup failure is a test failure, not an empty slice — unwrap here
+# so the assertions below stay about tenancy.
+fn ids_of(db :: Db, org :: Str) -> [sql, fs_read] List[Str] {
+  match audit.org_agent_ids(db, org) {
+    Err(_) => [],
+    Ok(ids) => ids,
+  }
+}
+
 fn contains_agent(rows :: List[audit.EvRow], agent :: Str) -> Bool {
   list.fold(rows, false, fn (acc :: Bool, r :: audit.EvRow) -> Bool {
     acc or str.contains(r.payload_json, str.join(["\"agent\":\"", agent, "\""], ""))
@@ -49,7 +58,7 @@ fn org_sees_only_its_own() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __s := setup(db)
-      let ids_a := audit.org_agent_ids(db, "org-a")
+      let ids_a := ids_of(db, "org-a")
       let rows_a := audit.query_events(db, ids_a, "", None)
       if contains_agent(rows_a, "agent-a1") and not contains_agent(rows_a, "agent-b1") {
         Ok(())
@@ -66,7 +75,7 @@ fn org_b_isolated() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __s := setup(db)
-      let rows_b := audit.query_events(db, audit.org_agent_ids(db, "org-b"), "", None)
+      let rows_b := audit.query_events(db, ids_of(db, "org-b"), "", None)
       if contains_agent(rows_b, "agent-b1") and not contains_agent(rows_b, "agent-a1") {
         Ok(())
       } else {
@@ -82,7 +91,7 @@ fn unknown_org_sees_nothing() -> [sql, fs_read, fs_write, time] Result[Unit, Str
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __s := setup(db)
-      let rows := audit.query_events(db, audit.org_agent_ids(db, "org-ghost"), "", None)
+      let rows := audit.query_events(db, ids_of(db, "org-ghost"), "", None)
       if list.is_empty(rows) {
         Ok(())
       } else {
@@ -107,7 +116,7 @@ fn interactions_rollup_and_isolation() -> [sql, fs_read, fs_write, time] Result[
     Ok(db) => {
       let __s := setup(db)
       let log := settlement.trail_on(db)
-      let tips_a := audit.query_events(db, audit.org_agent_ids(db, "org-a"), "cap.completed", None)
+      let tips_a := audit.query_events(db, ids_of(db, "org-a"), "cap.completed", None)
       if list.len(tips_a) == 1 {
         match list.head(tips_a) {
           None => Err("no tip"),
@@ -150,7 +159,7 @@ fn escalation_events_are_visible_to_their_own_org() -> [sql, fs_read, fs_write, 
       match hg.request(db, "agent-a1", "may I proceed?", "spend", "{}") {
         Err(e) => Err(str.concat("hg.request failed: ", e)),
         Ok(_) => {
-          let rows := audit.query_events(db, audit.org_agent_ids(db, "org-a"), "escalation.requested", None)
+          let rows := audit.query_events(db, ids_of(db, "org-a"), "escalation.requested", None)
           if list.len(rows) == 1 {
             Ok(())
           } else {

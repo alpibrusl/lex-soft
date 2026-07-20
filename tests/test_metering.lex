@@ -40,11 +40,13 @@ fn usage_counts_tasks() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __s := setup_with_n_tasks(db, "org-m", "agent-m1", 5)
-      let u := metering.usage_for(db, "org-m")
-      if u.tasks == 5 and u.spend_total == 0 and u.spend_denied == 0 {
-        Ok(())
-      } else {
-        Err(str.concat("unexpected usage: tasks=", str.concat(int.to_str(u.tasks), str.concat(" spend_total=", int.to_str(u.spend_total)))))
+      match metering.usage_for(db, "org-m") {
+        Err(e) => Err(str.concat("usage_for failed: ", e)),
+        Ok(u) => if u.tasks == 5 and u.spend_total == 0 and u.spend_denied == 0 {
+          Ok(())
+        } else {
+          Err(str.concat("unexpected usage: tasks=", str.concat(int.to_str(u.tasks), str.concat(" spend_total=", int.to_str(u.spend_total)))))
+        },
       }
     },
   }
@@ -109,11 +111,13 @@ fn exact_chargebacks_sum_exactly() -> [sql, fs_read, fs_write, time] Result[Unit
         Err(_) => true,
         Ok(_) => false,
       }
-      let u := metering.usage_for(db, "org-x")
-      if both_ok and bad_rejected and u.chargeback_count == 2 and u.chargeback_total_dec == "0.30" {
-        Ok(())
-      } else {
-        Err(str.concat("exact sum wrong: count=", str.concat(int.to_str(u.chargeback_count), str.concat(" total_dec=", u.chargeback_total_dec))))
+      match metering.usage_for(db, "org-x") {
+        Err(e) => Err(str.concat("usage_for failed: ", e)),
+        Ok(u) => if both_ok and bad_rejected and u.chargeback_count == 2 and u.chargeback_total_dec == "0.30" {
+          Ok(())
+        } else {
+          Err(str.concat("exact sum wrong: count=", str.concat(int.to_str(u.chargeback_count), str.concat(" total_dec=", u.chargeback_total_dec))))
+        },
       }
     },
   }
