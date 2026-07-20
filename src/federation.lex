@@ -383,10 +383,9 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       let authed := if str.is_empty(tok) {
         not cfg.require_token
       } else {
-        if verify_conn_token(cfg.secret, tok) {
-          true
-        } else {
-          pa.verify(db, tok)
+        match identity.resolve_subject(db, cfg.secret, tok) {
+          Ok(Some(_)) => true,
+          _ => pa.verify(db, tok),
         }
       }
       if authed {
