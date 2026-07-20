@@ -33,6 +33,17 @@ Only the current `main` is supported. Pin to a reviewed commit for production.
 - **Some routes assume an authenticating gateway in front.** Onboarding and
   discovery endpoints must be gated (signup token / proof-of-org) before being
   exposed to the internet — see `FederationConfig`.
+- **Partner key binding is trust-on-first-use, not proof of identity.** Binding
+  an Ed25519 key to an org requires signing a server-issued, single-use
+  challenge, and replacing an existing key additionally requires a signature
+  from the key being replaced. That proves *possession* of a key and
+  *continuity* of whoever bound it first. It does **not** prove the caller is
+  the real-world organisation whose name it claims: that needs a binding from
+  the org id to something externally verifiable — a domain serving
+  `/.well-known/agent-key.json` — and org ids here are opaque slugs, not
+  domains. Until then, who may claim a *new* org name is governed only by the
+  signup token, so treat that token as the org-namespace admission control it
+  is.
 
 ## Hardening status
 
