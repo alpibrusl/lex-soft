@@ -228,6 +228,52 @@ fn ev_json(r :: EvRow) -> jv.Json {
 
 # Resolve the requesting subject, scope to its org's agents (or a single ?agent=
 # that must belong to the org), optionally filter by ?kind=, and return the events.
+# One row per event kind the tenant's agents have produced, with its count. The
+# whole platform derives from the trail; this is that same trail counted, which
+# is what lets a dashboard show a tenant its activity without any pack having to
+# expose (unscoped, node-global) tables of its own. Tenant-safe by construction:
+# it runs through the identical org_agent_ids → agent_where boundary as
+# /audit/events, so a summary can only ever count the caller's own events.
+type KindCount = { kind :: Str, n :: Int }
+
+fn count_by_kind(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[KindCount] {
+  if list.is_empty(ids) {
+    []
+  } else {
+    let aw := agent_where(ids)
+    let q := str.join(["SELECT kind, COUNT(*) AS n FROM events WHERE ", aw.clause, " GROUP BY kind ORDER BY n DESC"], "")
+    let rows :: Result[List[KindCount], SqlError] := sql.query(db, q, aw.params)
+    match rows {
+      Err(_) => [],
+      Ok(rs) => rs,
+    }
+  }
+}
+
+fn kind_count_json(kc :: KindCount) -> jv.Json {
+  JObj([("kind", JStr(kc.kind)), ("count", JInt(kc.n))])
+}
+
+fn summary_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+  match ctx.bearer_token(c) {
+    None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
+      Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
+      Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
+      Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
+        Err(_) => resp.json_status(500, "{\"error\":\"audit scope lookup failed\"}"),
+        Ok(ids) => {
+          let counts := count_by_kind(db, ids)
+          let total := list.fold(counts, 0, fn (acc :: Int, kc :: KindCount) -> Int {
+            acc + kc.n
+          })
+          resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("total", JInt(total)), ("kinds", JList(list.map(counts, kind_count_json)))])))
+        },
+      },
+    },
+  }
+}
+
 fn events_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
@@ -323,8 +369,11 @@ fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router 
   let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     events_response(db, secrets, c)
   })
-  router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_int := router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     interactions_response(db, secrets, c)
+  })
+  router.route_effectful(r_int, "GET", "/audit/summary", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    summary_response(db, secrets, c)
   })
 }
 

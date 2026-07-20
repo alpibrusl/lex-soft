@@ -7,6 +7,8 @@ import "std.io" as io
 
 import "std.str" as str
 
+import "std.int" as int
+
 import "std.list" as list
 
 import "std.sql" as sql
@@ -160,8 +162,56 @@ fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, 
   }
 }
 
+# The summary counts only the caller's own events. Org A did ONE run (3 events:
+# received/step/completed); org B did TWO (6). A's summary must total exactly 3
+# and never mention B's event id — a leak would read 9. Same boundary as
+# /audit/events, asserted independently because a GROUP BY is an easy place to
+# forget the WHERE.
+fn summary_is_tenant_scoped() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let secret := bytes.from_str("test-secret")
+      let __ra := reg.register_in(db, "org-a", "agent-a1", "truck", "agent-a1", "http://a/", ["x"])
+      let __rb := reg.register_in(db, "org-b", "agent-b1", "truck", "agent-b1", "http://b/", ["x"])
+      let log := settlement.trail_on(db)
+      let __ea := settlement.record_run(log, "agent-a1", "handle", "in-a", "out-a", [])
+      let id_b := settlement.record_run(log, "agent-b1", "handle", "in-b", "out-b", [])
+      let __eb := settlement.record_run(log, "agent-b1", "handle", "in-b2", "out-b2", [])
+      let __acc := identity.create_account(db, "org-a", "org-a", "Org A", "free")
+      let tok_a := match identity.issue_credential(db, secret, "node", "org-a", "org-a", "agent-a1", "", 3600) {
+        Ok(cred) => cred.token,
+        Err(e) => str.concat("ERR:", e),
+      }
+      let r := audit.mount(router.new(), db, [secret])
+      let hdrs := map.from_list([("authorization", str.concat("Bearer ", tok_a))])
+      let res := router.dispatch(r, { body: "", method: "GET", path: "/audit/summary", query: "", headers: hdrs })
+      let leaks_b := str.contains(res.body, id_b)
+      match jv.parse(res.body) {
+        Err(_) => Err(str.concat("summary not json: ", str.slice(res.body, 0, 120))),
+        Ok(j) => {
+          let total := match jv.get_field(j, "total") {
+            Some(JInt(n)) => n,
+            _ => -1,
+          }
+          if res.status == 200 and total == 3 and not leaks_b {
+            Ok(())
+          } else {
+            Err(str.join(["summary scope wrong: status=", int.to_str(res.status), " total=", int.to_str(total), " leaks_b=", if leaks_b {
+              "y"
+            } else {
+              "n"
+            }], ""))
+          }
+        },
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [export_verifies_against_published_key(), cross_tenant_read_is_refused()]
+  let results := [export_verifies_against_published_key(), cross_tenant_read_is_refused(), summary_is_tenant_scoped()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
