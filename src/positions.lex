@@ -22,6 +22,8 @@
 
 import "std.list" as list
 
+import "std.str" as str
+
 import "lex-schema/json_value" as jv
 
 # `primitive` is the core module whose guarantees this position depends on —
@@ -82,5 +84,108 @@ fn pattern_json(p :: Pattern) -> jv.Json {
 # fetches once to learn how domains are described here.
 fn vocabulary_json() -> jv.Json {
   JObj([("positions", JList(list.map(all(), position_json))), ("patterns", JList(list.map(patterns(), pattern_json)))])
+}
+
+# ── Pack manifests ────────────────────────────────────────────────────────────
+# A manifest is how a domain declares itself in the vocabulary above: which
+# pattern it follows, and what it calls each position. It is what an onboarding
+# surface reads instead of hardcoding one industry's role list.
+#
+# `field` is the payload or column key the party binds to on the wire, so a
+# caller can go from "this domain calls the originator a shipper" to the actual
+# request field without reading the pack's source.
+type PartySlot = { position :: Str, name :: Str, title :: Str, field :: Str, required :: Bool }
+
+# `subject` is what the flow is about in this domain's words, and
+# `subject_ref_field` the key that identifies one. `custody_ref_field` is
+# recorded separately and deliberately: a domain may address its subject by one
+# name in its own API while the shared custody chain keys it by another, and a
+# manifest that hid that difference would send integrators to the wrong field.
+# Empty means the domain has no custody chain.
+type PackManifest = { id :: Str, title :: Str, tagline :: Str, pattern :: Str, subject :: Str, subject_ref_field :: Str, custody_ref_field :: Str, parties :: List[PartySlot], event_kinds :: List[Str], evidence_kinds :: List[Str], settles :: Bool, route_prefix :: Str }
+
+fn party_json(p :: PartySlot) -> jv.Json {
+  JObj([("position", JStr(p.position)), ("name", JStr(p.name)), ("title", JStr(p.title)), ("field", JStr(p.field)), ("required", JBool(p.required))])
+}
+
+fn strs_json(xs :: List[Str]) -> jv.Json {
+  JList(list.map(xs, fn (s :: Str) -> jv.Json {
+    JStr(s)
+  }))
+}
+
+fn manifest_json(m :: PackManifest) -> jv.Json {
+  JObj([("id", JStr(m.id)), ("title", JStr(m.title)), ("tagline", JStr(m.tagline)), ("pattern", JStr(m.pattern)), ("subject", JStr(m.subject)), ("subject_ref_field", JStr(m.subject_ref_field)), ("custody_ref_field", JStr(m.custody_ref_field)), ("parties", JList(list.map(m.parties, party_json))), ("event_kinds", strs_json(m.event_kinds)), ("evidence_kinds", strs_json(m.evidence_kinds)), ("settles", JBool(m.settles)), ("route_prefix", JStr(m.route_prefix))])
+}
+
+# Each repeated name reported ONCE, not once per occurrence — three slots
+# sharing a name is one fault to fix, not three.
+fn dupe_party_names(ps :: List[PartySlot]) -> List[Str] {
+  list.fold(ps, [], fn (acc :: List[Str], p :: PartySlot) -> List[Str] {
+    let repeated := list.len(list.filter(ps, fn (o :: PartySlot) -> Bool {
+      o.name == p.name
+    })) > 1
+    let seen := not list.is_empty(list.filter(acc, fn (n :: Str) -> Bool {
+      n == p.name
+    }))
+    if repeated and not seen {
+      list.concat(acc, [p.name])
+    } else {
+      acc
+    }
+  })
+}
+
+# Every way a manifest can be wrong, as a list of messages — empty means valid.
+# Returning all of them rather than the first lets a pack author fix a manifest
+# in one pass, and lets a host assert the whole catalogue in a single test.
+fn validate(m :: PackManifest) -> List[Str] {
+  let base := if str.is_empty(m.id) or str.is_empty(m.title) or str.is_empty(m.route_prefix) {
+    ["id, title and route_prefix are required"]
+  } else {
+    []
+  }
+  let pat := if is_pattern(m.pattern) {
+    []
+  } else {
+    [str.concat("unknown pattern: ", m.pattern)]
+  }
+  let empty := if list.is_empty(m.parties) {
+    ["a pack must name at least one party"]
+  } else {
+    []
+  }
+  let unknown := list.map(list.filter(m.parties, fn (p :: PartySlot) -> Bool {
+    not is_position(p.position)
+  }), fn (p :: PartySlot) -> Str {
+    str.join([p.name, " occupies unknown position ", p.position], "")
+  })
+  let unnamed := list.map(list.filter(m.parties, fn (p :: PartySlot) -> Bool {
+    str.is_empty(p.name) or str.is_empty(p.title)
+  }), fn (_p :: PartySlot) -> Str {
+    "every party needs a name and a title"
+  })
+  let dupes := list.map(dupe_party_names(m.parties), fn (n :: Str) -> Str {
+    str.concat("duplicate party name: ", n)
+  })
+  list.concat(base, list.concat(pat, list.concat(empty, list.concat(unknown, list.concat(unnamed, dupes)))))
+}
+
+fn is_valid(m :: PackManifest) -> Bool {
+  list.is_empty(validate(m))
+}
+
+# The parties of one pack that occupy a given position — how an onboarding
+# surface answers "what would I be called here?" for a chosen position.
+fn parties_at(m :: PackManifest, position :: Str) -> List[PartySlot] {
+  list.filter(m.parties, fn (p :: PartySlot) -> Bool {
+    p.position == position
+  })
+}
+
+# The catalogue as one document: the shared vocabulary plus every domain
+# described in it. This is the whole discovery payload.
+fn catalogue_json(ms :: List[PackManifest]) -> jv.Json {
+  JObj([("positions", JList(list.map(all(), position_json))), ("patterns", JList(list.map(patterns(), pattern_json))), ("packs", JList(list.map(ms, manifest_json)))])
 }
 
