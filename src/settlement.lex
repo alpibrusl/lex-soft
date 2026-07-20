@@ -35,20 +35,38 @@ import "lex-trail/kinds" as kinds
 
 import "lex-orm/connection" as conn
 
+# Which dialect an open handle actually speaks, probed rather than assumed.
+#
+# `sqlite_master` is the SQLite catalog table: it exists on every SQLite
+# database (empty ones included, where the query returns zero rows — still Ok)
+# and on no Postgres one. So Ok means SQLite and Err means "not SQLite", which
+# for the two dialects lex-orm models is Postgres.
+#
+# The probe is a catalog read on a table SQLite always has resident, and it
+# runs once per trail_on — the same place the previous hardcoded tag was
+# produced. It stays inside the `sql` effect, so no caller signature changes.
+fn detect_dialect(db :: Db) -> [sql] conn.Dialect {
+  let probe :: Result[List[{ present :: Int }], SqlError] := sql.query(db, "SELECT 1 AS present FROM sqlite_master LIMIT 1", [])
+  match probe {
+    Ok(_) => DbSqlite(()),
+    Err(_) => DbPostgres(()),
+  }
+}
+
 # Wrap an existing db as a trail log (idempotent schema init).
 #
-# DIALECT (#62): lex-soft opens its own database and passes a bare `Db`, so it
-# cannot know whether that handle is SQLite or Postgres — it tags the trail
-# SQLite. That tag is a LABEL, not a constraint: verified against Postgres 16,
-# std.sql accepts BOTH `?` and `$n` placeholders (the driver normalizes them),
-# and the trail's DDL and ON CONFLICT are portable. A lex-soft node on a
-# postgres:// DB_PATH writes its trail correctly today.
+# DIALECT (#62, L-3): lex-soft opens its own database and passes a bare `Db`,
+# so it cannot know from the type whether that handle is SQLite or Postgres.
+# It used to tag every trail SQLite. That tag was benign — std.sql accepts both
+# `?` and `$n` (the driver normalizes), and the trail's DDL and ON CONFLICT are
+# portable — but it was an assumption a node on a postgres:// DB_PATH silently
+# depended on, and it would become load-bearing the moment lex-trail grows any
+# dialect-SENSITIVE SQL. It is now probed instead of assumed.
 #
-# It only becomes load-bearing if lex-trail grows dialect-SENSITIVE SQL (a
-# uuid cast marker, say). Then pass the real one via trail_on_dialect, or move
-# this package to a lex-orm ConnDb so the dialect is known at open.
+# A host that already knows its dialect can still bypass the probe by calling
+# trail_on_dialect directly.
 fn trail_on(db :: Db) -> [sql] tlog.Log {
-  trail_on_dialect(db, DbSqlite(()))
+  trail_on_dialect(db, detect_dialect(db))
 }
 
 # Same, for a host that knows its database is Postgres.
