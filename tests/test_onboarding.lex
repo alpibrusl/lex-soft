@@ -35,6 +35,15 @@ import "../src/identity" as identity
 
 import "../src/audit" as audit
 
+# A registry lookup failure is a test failure, not an empty slice — unwrap here
+# so the assertions below stay about tenancy.
+fn ids_of(db :: Db, org :: Str) -> [sql, fs_read] List[Str] {
+  match audit.org_agent_ids(db, org) {
+    Err(_) => [],
+    Ok(ids) => ids,
+  }
+}
+
 fn demo_cfg() -> fed.FederationConfig {
   { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false, signup_token: "" }
 }
@@ -160,11 +169,11 @@ fn onboarded_agent_lands_in_its_org_tenant() -> [io, time, crypto, random, sql, 
       let r := fed.mount_federation(router.new(), db, demo_cfg())
       let body := jv.stringify(JObj([("org", JStr("beta-corp")), ("scope", JStr("logistics")), ("agents", JList([JObj([("id", JStr("beta-agent-1")), ("kind", JStr("truck")), ("inbox_url", JStr("http://beta/agent-1/")), ("capabilities", JList([JStr("transport")]))])]))]))
       let __res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
-      let beta_ids := audit.org_agent_ids(db, "beta-corp")
+      let beta_ids := ids_of(db, "beta-corp")
       let in_beta := list.fold(beta_ids, false, fn (acc :: Bool, id :: Str) -> Bool {
         acc or id == "beta-agent-1"
       })
-      let default_ids := audit.org_agent_ids(db, "default")
+      let default_ids := ids_of(db, "default")
       let in_default := list.fold(default_ids, false, fn (acc :: Bool, id :: Str) -> Bool {
         acc or id == "beta-agent-1"
       })

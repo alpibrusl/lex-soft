@@ -100,8 +100,68 @@ fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time,
   }
 }
 
+# M-2 negative: the tenant boundary holds at the HTTP surface, not just in the
+# scoping helper. Org A holds a real credential and has one event of its own, so
+# a pass here cannot be an artefact of a globally broken query. Org B's event id
+# must appear in NEITHER the events page NOR the signed export archive, and the
+# ?agent= override must not let A name B's agent.
+fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let secret := bytes.from_str("test-secret")
+      let seed := crypto.sha256(bytes.from_str("test-deploy-seed"))
+      let pub := match ed.public_key_b64(seed) {
+        Ok(p) => p,
+        Err(_) => "",
+      }
+      let __ra := reg.register_in(db, "org-a", "agent-a1", "truck", "agent-a1", "http://a/", ["x"])
+      let __rb := reg.register_in(db, "org-b", "agent-b1", "truck", "agent-b1", "http://b/", ["x"])
+      let log := settlement.trail_on(db)
+      let id_a := settlement.record_run(log, "agent-a1", "handle", "in-a", "out-a", [])
+      let id_b := settlement.record_run(log, "agent-b1", "handle", "in-b", "out-b", [])
+      let __acc := identity.create_account(db, "org-a", "org-a", "Org A", "free")
+      let tok_a := match identity.issue_credential(db, secret, "node", "org-a", "org-a", "agent-a1", "", 3600) {
+        Ok(cred) => cred.token,
+        Err(e) => str.concat("ERR:", e),
+      }
+      let r := audit.mount_export(audit.mount(router.new(), db, secret), db, secret, seed, pub)
+      let hdrs := map.from_list([("authorization", str.concat("Bearer ", tok_a))])
+      let events := router.dispatch(r, { body: "", method: "GET", path: "/audit/events", query: "", headers: hdrs })
+      let spoofed := router.dispatch(r, { body: "", method: "GET", path: "/audit/events", query: "agent=agent-b1", headers: hdrs })
+      let export := router.dispatch(r, { body: "", method: "POST", path: "/audit/export", query: "", headers: hdrs })
+      let sees_own := str.contains(events.body, id_a)
+      let leaks_events := str.contains(events.body, id_b)
+      let leaks_spoofed := str.contains(spoofed.body, id_b)
+      let leaks_export := str.contains(export.body, id_b)
+      if sees_own and not leaks_events and not leaks_spoofed and not leaks_export {
+        Ok(())
+      } else {
+        Err(str.join(["cross-tenant audit boundary broken: sees_own=", if sees_own {
+          "y"
+        } else {
+          "n"
+        }, " leak_events=", if leaks_events {
+          "y"
+        } else {
+          "n"
+        }, " leak_agent_param=", if leaks_spoofed {
+          "y"
+        } else {
+          "n"
+        }, " leak_export=", if leaks_export {
+          "y"
+        } else {
+          "n"
+        }], ""))
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [export_verifies_against_published_key()]
+  let results := [export_verifies_against_published_key(), cross_tenant_read_is_refused()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

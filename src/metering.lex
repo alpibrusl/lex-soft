@@ -158,8 +158,7 @@ fn spend_rows(db :: Db, ids :: List[Str]) -> [sql, fs_read] List[{ payload_json 
   }
 }
 
-fn usage_for(db :: Db, org :: Str) -> [sql, fs_read] Usage {
-  let ids := audit.org_agent_ids(db, org)
+fn usage_over_ids(db :: Db, ids :: List[Str]) -> [sql, fs_read] Usage {
   let spends := spend_rows(db, ids)
   let approved_total := list.fold(spends, 0, fn (acc :: Int, r :: { payload_json :: Str }) -> Int {
     if spend_field(r.payload_json, "approved") {
@@ -193,6 +192,16 @@ fn usage_for(db :: Db, org :: Str) -> [sql, fs_read] Usage {
   { tasks: count_kind(db, ids, kinds.cap_completed()), escalations: count_kind(db, ids, escalation_requested_kind()), spend_total: approved_total, spend_denied: denied_count, chargeback_count: list.len(cbs), chargeback_total: exact_f + cb_legacy, chargeback_total_dec: mdec.to_str(cb_exact) }
 }
 
+# Usage for an org's tenant slice. Propagates a registry failure rather than
+# reporting zero usage: a metered counter that silently reads 0 both under-bills
+# and disables the quota ceiling built on top of it (M-2).
+fn usage_for(db :: Db, org :: Str) -> [sql, fs_read] Result[Usage, Str] {
+  match audit.org_agent_ids(db, org) {
+    Err(e) => Err(e),
+    Ok(ids) => Ok(usage_over_ids(db, ids)),
+  }
+}
+
 # ── Plan quotas ────────────────────────────────────────────────────────────────
 fn plan_limit(plan :: Str) -> Int {
   if plan == "enterprise" {
@@ -208,9 +217,13 @@ fn plan_limit(plan :: Str) -> Int {
 
 # All-time task count against the org's plan ceiling. A brand-new org (no
 # account yet) is never over quota — callers should only invoke this once an
-# account is known to exist.
+# account is known to exist. A usage-lookup failure counts as OVER quota: the
+# gate fails closed, matching federation.rate_limited (M-1).
 fn over_quota(db :: Db, org :: Str, plan :: Str) -> [sql, fs_read] Bool {
-  usage_for(db, org).tasks >= plan_limit(plan)
+  match usage_for(db, org) {
+    Err(_) => true,
+    Ok(u) => u.tasks >= plan_limit(plan),
+  }
 }
 
 fn usage_json(u :: Usage) -> jv.Json {
@@ -246,18 +259,20 @@ fn usage_response(db :: Db, secret :: Bytes, catalog :: List[PlanPrice], c :: ct
     Some(tok) => match identity.resolve_subject(db, secret, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"usage lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
-      Ok(Some(subj)) => {
-        let plan := match identity.get_account(db, subj.account) {
-          Ok(Some(a)) => a.plan,
-          _ => "free",
-        }
-        let u := usage_for(db, subj.org)
-        let base := [("org", JStr(subj.org)), ("account", JStr(subj.account)), ("plan", JStr(plan)), ("plan_limit_tasks", JInt(plan_limit(plan))), ("usage", usage_json(u))]
-        let fields := match price_for(catalog, plan) {
-          None => base,
-          Some(p) => list.concat(base, [("billing_preview", billing_json(p, u.tasks))]),
-        }
-        resp.json(jv.stringify(JObj(fields)))
+      Ok(Some(subj)) => match usage_for(db, subj.org) {
+        Err(_) => resp.json_status(500, "{\"error\":\"usage lookup failed\"}"),
+        Ok(u) => {
+          let plan := match identity.get_account(db, subj.account) {
+            Ok(Some(a)) => a.plan,
+            _ => "free",
+          }
+          let base := [("org", JStr(subj.org)), ("account", JStr(subj.account)), ("plan", JStr(plan)), ("plan_limit_tasks", JInt(plan_limit(plan))), ("usage", usage_json(u))]
+          let fields := match price_for(catalog, plan) {
+            None => base,
+            Some(p) => list.concat(base, [("billing_preview", billing_json(p, u.tasks))]),
+          }
+          resp.json(jv.stringify(JObj(fields)))
+        },
       },
     },
   }

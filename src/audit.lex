@@ -53,12 +53,15 @@ type WhereClause = { clause :: Str, params :: List[SqlParam] }
 
 # The agent ids owned by an org (its tenant slice of the registry). This is the
 # tenant boundary: an account can only ever see events for these agents.
-fn org_agent_ids(db :: Db, org :: Str) -> [sql, fs_read] List[Str] {
+# A registry failure is propagated, NOT flattened to []: an audit surface that
+# renders "no events" when the lookup actually failed silently under-reports,
+# which is the one thing an audit trail must never do (M-2).
+fn org_agent_ids(db :: Db, org :: Str) -> [sql, fs_read] Result[List[Str], Str] {
   match reg.list_by_tenant(db, org) {
-    Err(_) => [],
-    Ok(refs) => list.map(refs, fn (a :: reg.AgentRef) -> Str {
+    Err(e) => Err(e),
+    Ok(refs) => Ok(list.map(refs, fn (a :: reg.AgentRef) -> Str {
       a.id
-    }),
+    })),
   }
 }
 
@@ -174,17 +177,21 @@ fn next_cursor(rows :: List[EvRow]) -> Option[Int] {
 
 # The agent ids to query for a request: the whole org, or a single ?agent=
 # that must actually belong to the org (else empty — never leaks another org's).
-fn scoped_ids(db :: Db, org :: Str, c :: ctx.Ctx) -> [sql, fs_read] List[Str] {
-  let all_ids := org_agent_ids(db, org)
-  let want := ctx.query_param_or(c, "agent", "")
-  if str.is_empty(want) {
-    all_ids
-  } else {
-    if in_set(all_ids, want) {
-      [want]
-    } else {
-      []
-    }
+fn scoped_ids(db :: Db, org :: Str, c :: ctx.Ctx) -> [sql, fs_read] Result[List[Str], Str] {
+  match org_agent_ids(db, org) {
+    Err(e) => Err(e),
+    Ok(all_ids) => {
+      let want := ctx.query_param_or(c, "agent", "")
+      if str.is_empty(want) {
+        Ok(all_ids)
+      } else {
+        if in_set(all_ids, want) {
+          Ok([want])
+        } else {
+          Ok([])
+        }
+      }
+    },
   }
 }
 
@@ -227,14 +234,16 @@ fn events_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, ti
     Some(tok) => match identity.resolve_subject(db, secret, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
-      Ok(Some(subj)) => {
-        let ids := scoped_ids(db, subj.org, c)
-        let rows := query_events(db, ids, ctx.query_param_or(c, "kind", ""), parse_cursor(c))
-        let cursor_j := match next_cursor(rows) {
-          None => JNull,
-          Some(ts) => JInt(ts),
-        }
-        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(rows))), ("next_cursor", cursor_j), ("events", JList(list.map(rows, ev_json)))])))
+      Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
+        Err(_) => resp.json_status(500, "{\"error\":\"audit scope lookup failed\"}"),
+        Ok(ids) => {
+          let rows := query_events(db, ids, ctx.query_param_or(c, "kind", ""), parse_cursor(c))
+          let cursor_j := match next_cursor(rows) {
+            None => JNull,
+            Some(ts) => JInt(ts),
+          }
+          resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(rows))), ("next_cursor", cursor_j), ("events", JList(list.map(rows, ev_json)))])))
+        },
       },
     },
   }
@@ -248,17 +257,19 @@ fn interactions_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_re
     Some(tok) => match identity.resolve_subject(db, secret, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
-      Ok(Some(subj)) => {
-        let ids := scoped_ids(db, subj.org, c)
-        let tips := query_events(db, ids, kinds.cap_completed(), parse_cursor(c))
-        let log := settlement.trail_on(db)
-        let cursor_j := match next_cursor(tips) {
-          None => JNull,
-          Some(ts) => JInt(ts),
-        }
-        resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(tips))), ("next_cursor", cursor_j), ("interactions", JList(list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
-          interaction_json(log, t)
-        })))])))
+      Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
+        Err(_) => resp.json_status(500, "{\"error\":\"audit scope lookup failed\"}"),
+        Ok(ids) => {
+          let tips := query_events(db, ids, kinds.cap_completed(), parse_cursor(c))
+          let log := settlement.trail_on(db)
+          let cursor_j := match next_cursor(tips) {
+            None => JNull,
+            Some(ts) => JInt(ts),
+          }
+          resp.json(jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("count", JInt(list.len(tips))), ("next_cursor", cursor_j), ("interactions", JList(list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
+            interaction_json(log, t)
+          })))])))
+        },
       },
     },
   }
@@ -282,25 +293,27 @@ fn export_response(db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str
     Some(tok) => match identity.resolve_subject(db, secret, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
-      Ok(Some(subj)) => {
-        let ids := scoped_ids(db, subj.org, c)
-        let events := collect_events(db, ids, "", None, export_cap())
-        let tips := collect_events(db, ids, kinds.cap_completed(), None, export_cap())
-        let log := settlement.trail_on(db)
-        let interactions := list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
-          interaction_json(log, t)
-        })
-        let body := jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("exported_at_ms", JInt(time.now_ms())), ("event_count", JInt(list.len(events))), ("truncated", JBool(list.len(events) >= export_cap())), ("events", JList(list.map(events, ev_json))), ("interactions", JList(interactions))]))
-        let digest := crypto.hex_encode(crypto.sha256(bytes.from_str(body)))
-        let sig := match ed.sign_text(sign_seed, digest) {
-          Ok(s) => s,
-          Err(_) => "",
-        }
-        if str.is_empty(sig) {
-          resp.json_status(500, "{\"error\":\"export signing failed\"}")
-        } else {
-          resp.json(jv.stringify(JObj([("archive", JStr(body)), ("sha256", JStr(digest)), ("alg", JStr("ed25519")), ("signature", JStr(sig)), ("public_key", JStr(pub_b64))])))
-        }
+      Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
+        Err(_) => resp.json_status(500, "{\"error\":\"audit scope lookup failed\"}"),
+        Ok(ids) => {
+          let events := collect_events(db, ids, "", None, export_cap())
+          let tips := collect_events(db, ids, kinds.cap_completed(), None, export_cap())
+          let log := settlement.trail_on(db)
+          let interactions := list.map(tips, fn (t :: EvRow) -> [sql] jv.Json {
+            interaction_json(log, t)
+          })
+          let body := jv.stringify(JObj([("org", JStr(subj.org)), ("account", JStr(subj.account)), ("exported_at_ms", JInt(time.now_ms())), ("event_count", JInt(list.len(events))), ("truncated", JBool(list.len(events) >= export_cap())), ("events", JList(list.map(events, ev_json))), ("interactions", JList(interactions))]))
+          let digest := crypto.hex_encode(crypto.sha256(bytes.from_str(body)))
+          let sig := match ed.sign_text(sign_seed, digest) {
+            Ok(s) => s,
+            Err(_) => "",
+          }
+          if str.is_empty(sig) {
+            resp.json_status(500, "{\"error\":\"export signing failed\"}")
+          } else {
+            resp.json(jv.stringify(JObj([("archive", JStr(body)), ("sha256", JStr(digest)), ("alg", JStr("ed25519")), ("signature", JStr(sig)), ("public_key", JStr(pub_b64))])))
+          }
+        },
       },
     },
   }
