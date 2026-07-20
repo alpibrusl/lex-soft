@@ -124,8 +124,63 @@ fn revoke_denies_resolution() -> [sql, fs_read, fs_write, time, random] Result[U
   }
 }
 
+# M-3: rotating the signing secret must not invalidate live credentials.
+# A credential issued under the OLD secret still resolves while that secret is
+# in the ring, and stops resolving once it is dropped — which is what makes a
+# rotation drain rather than log everyone out.
+fn a_retired_secret_still_resolves_until_dropped() -> [sql, fs_read, fs_write, time, crypto, random] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let old := bytes.from_str("secret-v1")
+      let new_sec := bytes.from_str("secret-v2")
+      let __a := identity.create_account(db, "rot", "rot", "Rot", "free")
+      match identity.issue_credential(db, old, "node", "rot", "rot", "agent-r", "", 3600) {
+        Err(e) => Err(str.concat("issue failed: ", e)),
+        Ok(cred) => {
+          let under_new_only := identity.resolve_subject_in(db, [new_sec], cred.token)
+          let under_ring := identity.resolve_subject_in(db, [new_sec, old], cred.token)
+          let under_empty := identity.resolve_subject_in(db, [], cred.token)
+          match (under_new_only, under_ring, under_empty) {
+            (Ok(None), Ok(Some(s)), Ok(None)) => if s.org == "rot" {
+              Ok(())
+            } else {
+              Err("the ring resolved the wrong org")
+            },
+            _ => Err("rotation semantics wrong: a retired secret must resolve only while it is in the ring, and an empty ring must resolve nothing"),
+          }
+        },
+      }
+    },
+  }
+}
+
+# The ring widens which KEYS are recognised, never what a recognised token may
+# do: a revoked credential stays revoked under every secret in the ring.
+fn the_ring_does_not_bypass_revocation() -> [sql, fs_read, fs_write, time, crypto, random] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let old := bytes.from_str("secret-v1")
+      let __a := identity.create_account(db, "rot", "rot", "Rot", "free")
+      match identity.issue_credential(db, old, "node", "rot", "rot", "agent-r", "", 3600) {
+        Err(e) => Err(str.concat("issue failed: ", e)),
+        Ok(cred) => {
+          let __rev := identity.revoke_credential(db, cred.cred_id)
+          match identity.resolve_subject_in(db, [bytes.from_str("secret-v2"), old], cred.token) {
+            Ok(None) => Ok(()),
+            _ => Err("a revoked credential resolved through the keyring"),
+          }
+        },
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [account_crud(), issue_and_resolve(), foreign_token_denied(), revoke_denies_resolution()]
+  let results := [a_retired_secret_still_resolves_until_dropped(), the_ring_does_not_bypass_revocation(), account_crud(), issue_and_resolve(), foreign_token_denied(), revoke_denies_resolution()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

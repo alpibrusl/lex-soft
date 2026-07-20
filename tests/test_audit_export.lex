@@ -61,7 +61,7 @@ fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time,
         Ok(cred) => cred.token,
         Err(e) => str.concat("ERR:", e),
       }
-      let r := audit.mount_export(router.new(), db, secret, seed, pub)
+      let r := audit.mount_export(router.new(), db, [secret], seed, pub)
       let req := { body: "", method: "POST", path: "/audit/export", query: "", headers: map.from_list([("authorization", str.concat("Bearer ", tok))]) }
       let response := router.dispatch(r, req)
       match jv.parse(response.body) {
@@ -126,7 +126,7 @@ fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, 
         Ok(cred) => cred.token,
         Err(e) => str.concat("ERR:", e),
       }
-      let r := audit.mount_export(audit.mount(router.new(), db, secret), db, secret, seed, pub)
+      let r := audit.mount_export(audit.mount(router.new(), db, [secret]), db, [secret], seed, pub)
       let hdrs := map.from_list([("authorization", str.concat("Bearer ", tok_a))])
       let events := router.dispatch(r, { body: "", method: "GET", path: "/audit/events", query: "", headers: hdrs })
       let spoofed := router.dispatch(r, { body: "", method: "GET", path: "/audit/events", query: "agent=agent-b1", headers: hdrs })

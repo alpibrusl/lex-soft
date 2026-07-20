@@ -178,7 +178,7 @@ fn ping_def(id :: Str) -> srv.AgentDef {
 }
 
 fn demo_cfg() -> fed.FederationConfig {
-  { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false, signup_token: "" }
+  { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), prev_secrets: [], ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false, signup_token: "", hs256_dispatch: true }
 }
 
 fn call_as(r :: router.Router, from_agent :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {

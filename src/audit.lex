@@ -228,10 +228,10 @@ fn ev_json(r :: EvRow) -> jv.Json {
 
 # Resolve the requesting subject, scope to its org's agents (or a single ?agent=
 # that must belong to the org), optionally filter by ?kind=, and return the events.
-fn events_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+fn events_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
-    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
@@ -251,10 +251,10 @@ fn events_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, ti
 
 # Same scoping as /audit/events, rolled up per run (one row per cap.completed
 # tip) with a re-derived tamper-evidence flag instead of the raw event triple.
-fn interactions_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+fn interactions_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
-    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
@@ -287,10 +287,10 @@ fn export_cap() -> Int {
   2000
 }
 
-fn export_response(db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
+fn export_response(db :: Db, secrets :: List[Bytes], sign_seed :: Bytes, pub_b64 :: Str, c :: ctx.Ctx) -> [sql, fs_read, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
-    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"audit lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => match scoped_ids(db, subj.org, c) {
@@ -319,20 +319,20 @@ fn export_response(db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str
   }
 }
 
-fn mount(r :: router.Router, db :: Db, secret :: Bytes) -> router.Router {
+fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
   let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    events_response(db, secret, c)
+    events_response(db, secrets, c)
   })
   router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    interactions_response(db, secret, c)
+    interactions_response(db, secrets, c)
   })
 }
 
 # Host opt-in for the signed archive (#48): needs the deployment signing seed
 # and its published key, which plain mount() deliberately doesn't take.
-fn mount_export(r :: router.Router, db :: Db, secret :: Bytes, sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
+fn mount_export(r :: router.Router, db :: Db, secrets :: List[Bytes], sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
   router.route_effectful(r, "POST", "/audit/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    export_response(db, secret, sign_seed, pub_b64, c)
+    export_response(db, secrets, sign_seed, pub_b64, c)
   })
 }
 

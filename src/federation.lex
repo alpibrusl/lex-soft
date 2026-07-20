@@ -85,7 +85,14 @@ import "./notifications" as notifications
 # — do NOT expose an empty-token deployment to the internet). Proof-of-org
 # (challenge/response against the org's published key) is the stronger, follow-on
 # gate; the shared signup token stops anonymous issuance now.
-type FederationConfig = { base :: Str, org :: Str, secret :: Bytes, ttl :: Int, sign_seed :: Bytes, pub_b64 :: Str, require_token :: Bool, signup_token :: Str }
+type FederationConfig = { base :: Str, org :: Str, secret :: Bytes, prev_secrets :: List[Bytes], ttl :: Int, sign_seed :: Bytes, pub_b64 :: Str, require_token :: Bool, signup_token :: Str, hs256_dispatch :: Bool }
+
+# The keyring a presented credential is verified against: the current secret
+# first, then any retired ones still draining. Tokens are only ever ISSUED
+# under `secret`.
+fn keyring(cfg :: FederationConfig) -> List[Bytes] {
+  list.concat([cfg.secret], cfg.prev_secrets)
+}
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
 fn jstr(j :: jv.Json, key :: Str) -> Str {
@@ -394,9 +401,13 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       let authed := if str.is_empty(tok) {
         not cfg.require_token
       } else {
-        match identity.resolve_subject(db, cfg.secret, tok) {
-          Ok(Some(_)) => true,
-          _ => pa.verify(db, tok),
+        if cfg.hs256_dispatch {
+          match identity.resolve_subject_in(db, keyring(cfg), tok) {
+            Ok(Some(_)) => true,
+            _ => pa.verify(db, tok),
+          }
+        } else {
+          pa.verify(db, tok)
         }
       }
       if authed {

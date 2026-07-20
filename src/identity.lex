@@ -148,6 +148,51 @@ fn revoke_credential(db :: Db, cred_id :: Str) -> [sql, fs_write] Result[Unit, S
 # whose credential is missing or revoked resolves to None — so revocation is
 # immediate and authoritative, independent of the token's own (still-valid) exp.
 # Ok(None) = "not a subject we recognise"; Err = a storage failure.
+# Rotating the HS256 signing secret used to invalidate every live credential at
+# once, because verification only ever tried one key. A node can now carry
+# retired secrets alongside the current one: tokens are ISSUED under the current
+# secret and ACCEPTED under any in the ring, so a rotation drains naturally as
+# old credentials expire instead of logging everyone out.
+#
+# This does not weaken verification. A token still has to verify under exactly
+# one secret, and the jti lookup plus the revoked check happen afterwards
+# either way — the ring widens which keys are recognised, not what a recognised
+# token is allowed to do.
+#
+# A `kid` header would let us pick the right key directly instead of trying
+# each; lex-crypto's sign_hs256 writes a fixed header and exposes no header on
+# decode, so that needs an upstream change. With a handful of secrets the
+# difference is a few HMACs.
+fn verify_any(secrets :: List[Bytes], presented :: Str) -> [time] Option[jwt.Claims] {
+  list.fold(secrets, None, fn (found :: Option[jwt.Claims], sec :: Bytes) -> [time] Option[jwt.Claims] {
+    match found {
+      Some(c) => Some(c),
+      None => match jwt.verify_hs256(sec, presented) {
+        Ok(c) => Some(c),
+        Err(_) => None,
+      },
+    }
+  })
+}
+
+# Resolve against a whole keyring. `secrets` is current-first; an empty ring
+# resolves nothing, which is the correct fail-closed reading of "this node has
+# no signing key configured".
+fn resolve_subject_in(db :: Db, secrets :: List[Bytes], presented :: Str) -> [sql, fs_read, time] Result[Option[Subject], Str] {
+  match verify_any(secrets, presented) {
+    None => Ok(None),
+    Some(c) => match find_cred_by_jti(db, c.jti) {
+      Err(e) => Err(e),
+      Ok(None) => Ok(None),
+      Ok(Some(cr)) => if cr.revoked == 0 {
+        Ok(Some({ account: cr.account, org: cr.org, agent_id: cr.agent_id, scope: cr.scope }))
+      } else {
+        Ok(None)
+      },
+    },
+  }
+}
+
 fn resolve_subject(db :: Db, secret :: Bytes, presented :: Str) -> [sql, fs_read, time] Result[Option[Subject], Str] {
   match jwt.verify_hs256(secret, presented) {
     Err(_) => Ok(None),

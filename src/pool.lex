@@ -45,10 +45,10 @@ fn body_int(j :: jv.Json, k :: Str, dflt :: Int) -> Int {
   }
 }
 
-fn claim_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, fs_write, time] resp.Response {
+fn claim_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, fs_write, time] resp.Response {
   match ctx.bearer_token(c) {
     None => resp.unauthorized("{\"error\":\"missing bearer token\"}"),
-    Some(tok) => match identity.resolve_subject(db, secret, tok) {
+    Some(tok) => match identity.resolve_subject_in(db, secrets, tok) {
       Err(_) => resp.json_status(500, "{\"error\":\"credential lookup failed\"}"),
       Ok(None) => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Ok(Some(subj)) => {
@@ -73,9 +73,9 @@ fn claim_response(db :: Db, secret :: Bytes, c :: ctx.Ctx) -> [sql, fs_read, fs_
   }
 }
 
-fn mount(r :: router.Router, db :: Db, secret :: Bytes) -> router.Router {
+fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
   router.route_effectful(r, "POST", "/pool/claim", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    claim_response(db, secret, c)
+    claim_response(db, secrets, c)
   })
 }
 
