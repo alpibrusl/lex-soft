@@ -85,7 +85,7 @@ fn trail_on_dialect(db :: Db, dialect :: conn.Dialect) -> [sql] tlog.Log {
 # id) — identical payloads content-hash-dedup to one event.
 fn record_chargeback(log :: tlog.Log, from_agent :: Str, to_agent :: Str, amount :: Float, currency :: Str, ref :: Str) -> [sql, time] Result[Str, Str] {
   let payload := jv.stringify(JObj([("agent", JStr(from_agent)), ("from_agent", JStr(from_agent)), ("to_agent", JStr(to_agent)), ("amount", JFloat(amount)), ("currency", JStr(currency)), ("ref", JStr(ref))]))
-  match tlog.append(log, "settlement.chargeback", None, payload) {
+  match tlog.append_actor(log, "settlement.chargeback", from_agent, None, payload) {
     Err(e) => Err(e),
     Ok(ev) => Ok(ev.id),
   }
@@ -107,7 +107,7 @@ fn record_chargeback_dec(log :: tlog.Log, from_agent :: Str, to_agent :: Str, am
       let canonical := money.format(m)
       let approx := int.to_float(m.amount) / int.to_float(mdec.pow10(0 - m.exponent))
       let payload := jv.stringify(JObj([("agent", JStr(from_agent)), ("from_agent", JStr(from_agent)), ("to_agent", JStr(to_agent)), ("amount_dec", JStr(canonical)), ("amount", JFloat(approx)), ("currency", JStr(currency_code)), ("ref", JStr(ref))]))
-      match tlog.append(log, "settlement.chargeback", None, payload) {
+      match tlog.append_actor(log, "settlement.chargeback", from_agent, None, payload) {
         Err(e) => Err(e),
         Ok(ev) => Ok(ev.id),
       }
@@ -117,17 +117,17 @@ fn record_chargeback_dec(log :: tlog.Log, from_agent :: Str, to_agent :: Str, am
 
 fn record_run(log :: tlog.Log, agent :: Str, skill :: Str, input :: Str, answer :: Str, tools :: List[Str]) -> [sql, time] Str {
   let recv := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("input", JStr(input))]))
-  match tlog.append(log, kinds.a2a_task_received(), None, recv) {
+  match tlog.append_actor(log, kinds.a2a_task_received(), agent, None, recv) {
     Err(_) => "",
     Ok(e1) => {
       let step := jv.stringify(JObj([("agent", JStr(agent)), ("tool_calls", JList(list.map(tools, fn (t :: Str) -> jv.Json {
         JStr(t)
       })))]))
-      match tlog.append(log, kinds.llm_step(), Some(e1.id), step) {
+      match tlog.append_actor(log, kinds.llm_step(), agent, Some(e1.id), step) {
         Err(_) => "",
         Ok(e2) => {
           let done := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("result", JStr(answer))]))
-          match tlog.append(log, kinds.cap_completed(), Some(e2.id), done) {
+          match tlog.append_actor(log, kinds.cap_completed(), agent, Some(e2.id), done) {
             Err(_) => "",
             Ok(e3) => e3.id,
           }

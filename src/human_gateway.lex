@@ -107,7 +107,7 @@ fn request(db :: Db, from_agent :: Str, question :: Str, kind :: Str, detail :: 
     Ok(_) => {
       let log := settlement.trail_on(db)
       let payload := jv.stringify(JObj([("approval_id", JStr(id)), ("from_agent", JStr(from_agent)), ("kind", JStr(kind))]))
-      let __t := tlog.append(log, "escalation.requested", head_parent(log), payload)
+      let __t := tlog.append_actor(log, "escalation.requested", from_agent, head_parent(log), payload)
       let acct := account_for_agent(db, from_agent)
       let __n := if str.is_empty(acct) {
         ""

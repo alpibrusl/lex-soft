@@ -71,20 +71,32 @@ fn in_set(ids :: List[Str], want :: Str) -> Bool {
   })
 }
 
-# (payload_json LIKE '%"agent":"a1"%' OR …) — matches events acted by any of
-# ids. Checks BOTH `"agent"` (settlement/arm events) and `"from_agent"`
-# (escalation.requested — human_gateway.request uses that key, not "agent")
-# so an org's escalations aren't silently invisible to its own audit/usage
-# queries. Fixed here rather than left as a #60 follow-up since #61's usage
-# counters depend on it being correct.
+# Match events acted by any of `ids`, scoping an org's audit to its own agents.
+#
+# Fast path is the indexed `actor` column (lex-trail M-2): every event this
+# version writes carries the acting agent there (see settlement/human_gateway),
+# so `actor IN (…)` is an index range, not a scan.
+#
+# Fallback is the original payload_json LIKE, GATED on `actor = ''` so it only
+# touches rows written before the actor column existed — a populated row never
+# pays for it. It still checks BOTH `"agent"` (settlement/arm) and `"from_agent"`
+# (escalation.requested uses that key, not "agent"), matching the pre-M-2 scope
+# exactly, so no legacy event silently drops out of its org's audit/usage counts.
 fn agent_where(ids :: List[Str]) -> WhereClause {
-  let parts := list.map(ids, fn (_id :: Str) -> Str {
+  let in_marks := str.join(list.map(ids, fn (_id :: Str) -> Str {
+    "?"
+  }), ", ")
+  let in_params := list.map(ids, fn (id :: Str) -> SqlParam {
+    PStr(id)
+  })
+  let like_parts := list.map(ids, fn (_id :: Str) -> Str {
     "(payload_json LIKE ? OR payload_json LIKE ?)"
   })
-  let params := list.fold(ids, [], fn (acc :: List[SqlParam], id :: Str) -> List[SqlParam] {
+  let like_params := list.fold(ids, [], fn (acc :: List[SqlParam], id :: Str) -> List[SqlParam] {
     list.concat(acc, [PStr(str.join(["%\"agent\":\"", id, "\"%"], "")), PStr(str.join(["%\"from_agent\":\"", id, "\"%"], ""))])
   })
-  { clause: str.join(["(", str.join(parts, " OR "), ")"], ""), params: params }
+  let clause := str.join(["(actor IN (", in_marks, ") OR (actor = '' AND (", str.join(like_parts, " OR "), ")))"], "")
+  { clause: clause, params: list.concat(in_params, like_params) }
 }
 
 # Page size for both /audit/events and /audit/interactions.
