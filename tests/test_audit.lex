@@ -27,6 +27,8 @@ import "../src/audit" as audit
 
 import "../src/human_gateway" as hg
 
+import "lex-trail/log" as tlog
+
 # A registry lookup failure is a test failure, not an empty slice — unwrap here
 # so the assertions below stay about tenancy.
 fn ids_of(db :: Db, org :: Str) -> [sql, fs_read] List[Str] {
@@ -171,8 +173,30 @@ fn escalation_events_are_visible_to_their_own_org() -> [sql, fs_read, fs_write, 
   }
 }
 
+# A row written before the actor column existed (or by a pack that has not yet
+# adopted append_actor) has actor '' but names its agent in the payload. It must
+# still be scoped to its own org via the LIKE fallback — and never leak to
+# another. Guards the fallback branch of agent_where after the M-2 change.
+fn legacy_actorless_row_scoped_via_fallback() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __s := setup(db)
+      let log := settlement.trail_on(db)
+      let __leg := tlog.append(log, "coldchain.excursion", None, "{\"agent\":\"agent-a1\",\"trailer\":\"T1\"}")
+      let rows_a := audit.query_events(db, ids_of(db, "org-a"), "coldchain.excursion", None)
+      let rows_b := audit.query_events(db, ids_of(db, "org-b"), "coldchain.excursion", None)
+      if list.len(rows_a) == 1 and list.is_empty(rows_b) {
+        Ok(())
+      } else {
+        Err("legacy fallback: org-a should see 1 actorless event, org-b 0")
+      }
+    },
+  }
+}
+
 fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
-  let results := [org_sees_only_its_own(), org_b_isolated(), unknown_org_sees_nothing(), interactions_rollup_and_isolation(), escalation_events_are_visible_to_their_own_org()]
+  let results := [org_sees_only_its_own(), org_b_isolated(), unknown_org_sees_nothing(), interactions_rollup_and_isolation(), escalation_events_are_visible_to_their_own_org(), legacy_actorless_row_scoped_via_fallback()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
