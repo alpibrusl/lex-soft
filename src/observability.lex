@@ -78,7 +78,7 @@ fn tenant_load_json(t :: TenantLoad) -> jv.Json {
 # identity; the rest is derived from the DB.
 fn health_json(db :: Db, org :: Str, version :: Str) -> [sql, fs_read] Str {
   let notif_status := JObj([("pending", JInt(count_where(db, "notifications", "WHERE status='pending'"))), ("delivered", JInt(count_where(db, "notifications", "WHERE status='delivered'"))), ("failed", JInt(count_where(db, "notifications", "WHERE status='failed'")))])
-  let counts := JObj([("agents", JInt(count(db, "agents"))), ("tenants", JInt(distinct_tenants(db))), ("accounts", JInt(count(db, "accounts"))), ("credentials", JInt(count(db, "credentials"))), ("active_credentials", JInt(count_where(db, "credentials", "WHERE revoked=0"))), ("trail_events", JInt(count(db, "events"))), ("approvals_pending", JInt(count_where(db, "approvals", "WHERE status='pending'"))), ("known_peer_nodes", JInt(count(db, "org_directory")))])
+  let counts := JObj([("agents", JInt(count(db, "agents"))), ("tenants", JInt(distinct_tenants(db))), ("accounts", JInt(count(db, "accounts"))), ("credentials", JInt(count(db, "credentials"))), ("active_credentials", JInt(count_where(db, "credentials", "WHERE revoked=0"))), ("relationships", JInt(count_where(db, "relationships", "WHERE active=1"))), ("trail_events", JInt(count(db, "traces"))), ("approvals_pending", JInt(count_where(db, "approvals", "WHERE status='pending'"))), ("known_peer_nodes", JInt(count(db, "org_directory")))])
   jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("version", JStr(version)), ("counts", counts), ("notifications", notif_status), ("tenant_load", JList(list.map(tenant_loads(db), fn (t :: TenantLoad) -> jv.Json {
     tenant_load_json(t)
   })))]))
