@@ -159,12 +159,18 @@ fn revoke_credential(db :: Db, cred_id :: Str) -> [sql, fs_write] Result[Unit, S
 # either way — the ring widens which keys are recognised, not what a recognised
 # token is allowed to do.
 #
-# A `kid` header would let us pick the right key directly instead of trying
-# each; lex-crypto's sign_hs256 writes a fixed header and exposes no header on
-# decode, so that needs an upstream change. With a handful of secrets the
-# difference is a few HMACs.
+# Tokens carry the signing key's `kid` (conn_token.issue → sign_hs256_kid), so we
+# try the key whose id matches FIRST and fall back to the rest of the ring —
+# turning "try every retired secret" into one HMAC on the common path. This is
+# key SELECTION only: every candidate is still verified cryptographically, so a
+# token with no kid (issued before this change) or a forged kid just means we try
+# more keys, never that a wrong key is accepted.
 fn verify_any(secrets :: List[Bytes], presented :: Str) -> [time] Option[jwt.Claims] {
-  list.fold(secrets, None, fn (found :: Option[jwt.Claims], sec :: Bytes) -> [time] Option[jwt.Claims] {
+  let ordered := match jwt.token_kid(presented) {
+    None => secrets,
+    Some(kid) => kid_first(secrets, kid),
+  }
+  list.fold(ordered, None, fn (found :: Option[jwt.Claims], sec :: Bytes) -> [time] Option[jwt.Claims] {
     match found {
       Some(c) => Some(c),
       None => match jwt.verify_hs256(sec, presented) {
@@ -173,6 +179,19 @@ fn verify_any(secrets :: List[Bytes], presented :: Str) -> [time] Option[jwt.Cla
       },
     }
   })
+}
+
+# Ring reordered so keys whose id equals `kid` come first, the rest after — order
+# within each group preserved. Pure; no key is dropped, so verification coverage
+# is unchanged.
+fn kid_first(secrets :: List[Bytes], kid :: Str) -> List[Bytes] {
+  let matching := list.filter(secrets, fn (s :: Bytes) -> Bool {
+    conn_token.secret_kid(s) == kid
+  })
+  let rest := list.filter(secrets, fn (s :: Bytes) -> Bool {
+    conn_token.secret_kid(s) != kid
+  })
+  list.concat(matching, rest)
 }
 
 # Resolve against a whole keyring. `secrets` is current-first; an empty ring
