@@ -236,8 +236,13 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
       Some(JList(xs)) => xs,
       _ => [],
     }
-    let __regs := list.fold(agents, (), fn (_acc :: Unit, aj :: jv.Json) -> [sql, fs_write, time, random] Unit {
-      register_peer_json(db, aj, req_org, link_from, role, contract)
+    let refused := list.fold(agents, [], fn (acc :: List[Str], aj :: jv.Json) -> [sql, fs_write, time, random] List[Str] {
+      let r := register_peer_json(db, aj, req_org, link_from, role, contract)
+      if str.is_empty(r) {
+        acc
+      } else {
+        list.concat(acc, [r])
+      }
     })
     let partner_key := jstr(j, "public_key")
     let key_binding := if str.is_empty(partner_key) {
@@ -257,8 +262,10 @@ fn onboard_connection(db :: Db, cfg :: FederationConfig, org :: Str, base :: Str
       Ok(_) => match identity.issue_credential(db, cfg.secret, org, req_org, req_org, "", scope, cfg.ttl) {
         Err(_) => credential_error_response(),
         Ok(ic) => {
-          let __ev := tlog.append(settlement.trail_on(db), "credential.issued", None, jv.stringify(JObj([("agent", JStr(req_org)), ("org", JStr(req_org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents)))])))
-          resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents))), ("token", JStr(ic.token)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
+          let __ev := tlog.append(settlement.trail_on(db), "credential.issued", None, jv.stringify(JObj([("agent", JStr(req_org)), ("org", JStr(req_org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents) - list.len(refused)))])))
+          resp.json(jv.stringify(JObj([("ok", JBool(true)), ("org", JStr(org)), ("scope", JStr(scope)), ("registered", JInt(list.len(agents) - list.len(refused))), ("refused_agents", JList(list.map(refused, fn (rid :: Str) -> jv.Json {
+            JStr(rid)
+          }))), ("token", JStr(ic.token)), ("agents", JList(list.map(registry_refs(db), fn (a :: reg.AgentRef) -> jv.Json {
             agentref_json(a, base)
           })))])))
         },
@@ -338,10 +345,14 @@ fn registry_refs(db :: Db) -> [sql, fs_read] List[reg.AgentRef] {
 # per-org discovery / audit / usage (which key off `agent.tenant == org`) include
 # it. Empty tenant falls back to "default" — preserves the pre-tenant behaviour
 # for any caller that doesn't supply an org.
-fn register_peer_json(db :: Db, aj :: jv.Json, tenant :: Str, link_from :: Str, role :: Str, contract :: Str) -> [sql, fs_write, time, random] Unit {
+# Register one agent from the onboarding JSON. Returns the id if it was REFUSED
+# (empty id, or an id another org already owns — see registry.register_in), so
+# the caller can report which claims were rejected instead of silently dropping
+# them. Returns "" when the agent was registered (or refreshed).
+fn register_peer_json(db :: Db, aj :: jv.Json, tenant :: Str, link_from :: Str, role :: Str, contract :: Str) -> [sql, fs_write, time, random] Str {
   let id := jstr(aj, "id")
   if str.is_empty(id) {
-    ()
+    ""
   } else {
     let kind := if str.is_empty(jstr(aj, "kind")) {
       "external"
@@ -361,17 +372,20 @@ fn register_peer_json(db :: Db, aj :: jv.Json, tenant :: Str, link_from :: Str, 
       tenant
     }
     match reg.register_in(db, t, id, kind, name, inbox_url, caps) {
-      Err(_) => (),
-      Ok(_) => if str.is_empty(link_from) {
-        ()
-      } else {
-        if str.is_empty(role) {
+      Err(_) => id,
+      Ok(_) => {
+        let __rel := if str.is_empty(link_from) {
           ()
         } else {
-          match rel.add(db, link_from, id, role, contract) {
-            _ => (),
+          if str.is_empty(role) {
+            ()
+          } else {
+            match rel.add(db, link_from, id, role, contract) {
+              _ => (),
+            }
           }
         }
+        ""
       },
     }
   }

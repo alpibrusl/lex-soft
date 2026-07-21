@@ -42,12 +42,45 @@ fn register(db :: Db, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, cap
 
 # Register an agent scoped to a tenant. The tenant is the multi-tenant boundary:
 # discovery and visibility are filtered by it (see list_by_tenant / find_by_kind_in).
+# The tenant that currently owns an agent id, or None if the id is free. Agent
+# ids are a GLOBAL namespace (the primary key), so this is how a caller learns
+# whether an id it wants is already claimed by someone else.
+fn owner_tenant(db :: Db, id :: Str) -> [sql] Option[Str] {
+  let rows :: Result[List[{ tenant :: Str }], SqlError] := sql.query(db, "SELECT tenant FROM agents WHERE id=? LIMIT 1", [PStr(id)])
+  match rows {
+    Err(_) => None,
+    Ok(rs) => match list.head(rs) {
+      None => None,
+      Some(r) => Some(r.tenant),
+    },
+  }
+}
+
+# Register (or idempotently refresh) an agent under `tenant`. Because ids are a
+# global primary key, a naive UPSERT let a second org claim an id another org
+# already owns — overwriting its tenant and inbox_url, i.e. hijacking it (audit
+# H-2). This now REFUSES a cross-tenant claim: an id owned by a different tenant
+# is left untouched and an error is returned, so the caller can surface it rather
+# than silently steal or be stolen from. Same-tenant re-registration still
+# refreshes. The `WHERE agents.tenant = excluded.tenant` guard on the UPSERT is
+# defense in depth — even a racing insert cannot flip ownership.
 fn register_in(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
+  match owner_tenant(db, id) {
+    Some(owner) => if owner != tenant {
+      Err(str.join(["agent id '", id, "' is already registered to another org"], ""))
+    } else {
+      do_register_in(db, tenant, id, kind, name, inbox_url, capabilities)
+    },
+    None => do_register_in(db, tenant, id, kind, name, inbox_url, capabilities),
+  }
+}
+
+fn do_register_in(db :: Db, tenant :: Str, id :: Str, kind :: Str, name :: Str, inbox_url :: Str, capabilities :: List[Str]) -> [sql, fs_write, time] Result[Unit, Str] {
   let now := time.now_str()
   let caps_json := jv.stringify(JList(list.map(capabilities, fn (c :: Str) -> jv.Json {
     JStr(c)
   })))
-  let q := "INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', tenant=excluded.tenant, last_seen_at=excluded.last_seen_at"
+  let q := "INSERT INTO agents (id, kind, name, inbox_url, capabilities_json, status, tenant, registered_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, inbox_url=excluded.inbox_url, capabilities_json=excluded.capabilities_json, status='active', tenant=excluded.tenant, last_seen_at=excluded.last_seen_at WHERE agents.tenant = excluded.tenant"
   match sql.exec(db, q, [PStr(id), PStr(kind), PStr(name), PStr(inbox_url), PStr(caps_json), PStr(tenant), PStr(now), PStr(now)]) {
     Err(e) => Err(e.message),
     Ok(_) => Ok(()),

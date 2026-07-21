@@ -308,8 +308,46 @@ fn tenant_scoped_discovery() -> [io, time, crypto, random, sql, fs_read, fs_writ
   }
 }
 
+# Audit H-2: agent ids are a global namespace, so one org must not be able to
+# claim an id another org already owns and thereby overwrite its tenant/inbox
+# (a takeover). A cross-tenant claim is refused; the original owner is untouched.
+fn cross_tenant_id_claim_is_refused() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let __a := reg.register_in(db, "acme", "shared-truck", "truck", "Acme Truck", "http://acme/inbox", ["x"])
+      let claim := reg.register_in(db, "beta", "shared-truck", "truck", "Beta Truck", "http://beta/inbox", ["x"])
+      let refused := match claim {
+        Err(_) => true,
+        Ok(_) => false,
+      }
+      let same := match reg.register_in(db, "acme", "shared-truck", "truck", "Acme Truck v2", "http://acme/inbox2", ["x"]) {
+        Err(_) => false,
+        Ok(_) => true,
+      }
+      match reg.owner_tenant(db, "shared-truck") {
+        Some(owner) => if refused and same and owner == "acme" {
+          Ok(())
+        } else {
+          Err(str.join(["H-2: refused=", bstr(refused), " same_tenant_ok=", bstr(same), " owner=", owner], ""))
+        },
+        None => Err("owner vanished"),
+      }
+    },
+  }
+}
+
+fn bstr(b :: Bool) -> Str {
+  if b {
+    "true"
+  } else {
+    "false"
+  }
+}
+
 fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
-  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery()]
+  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery(), cross_tenant_id_claim_is_refused()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,
