@@ -8,6 +8,10 @@
 
 import "std.sql" as sql
 
+import "std.str" as str
+
+import "std.list" as list
+
 import "lex-jobs/src/jobs" as jobs
 
 fn ddl_agents() -> Str {
@@ -153,6 +157,69 @@ fn ddl_org_directory() -> Str {
   "CREATE TABLE IF NOT EXISTS org_directory (org TEXT PRIMARY KEY, catalog_url TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT '[]', public_key TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
 }
 
+# GDPR-01: backfill a `tenant` column onto tables that never had a tenant/org
+# concept of their own, deriving it from the row's owning agent (via
+# `agents.tenant`) or owning account (via `accounts.org`) — the two tables
+# that already carry the real value. COALESCE guards against an orphaned FK
+# (e.g. a trace whose agent was since deleted) aborting the whole UPDATE with
+# a NOT NULL violation; such rows just keep the '' default, which is the
+# correct fail-closed reading of "no tenant could be determined".
+fn backfill_migrations(db :: Db) -> [sql, fs_write] Unit {
+  let __c1 := exec_ddl_tolerant(db, "ALTER TABLE relationships ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b1 := exec_ddl_tolerant(db, "UPDATE relationships SET tenant = COALESCE((SELECT tenant FROM agents WHERE agents.id = relationships.from_agent), '') WHERE tenant = ''")
+  let __c2 := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b2 := exec_ddl_tolerant(db, "UPDATE traces SET tenant = COALESCE((SELECT tenant FROM agents WHERE agents.id = traces.agent_id), '') WHERE tenant = ''")
+  let __c3 := exec_ddl_tolerant(db, "ALTER TABLE agent_state ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b3 := exec_ddl_tolerant(db, "UPDATE agent_state SET tenant = COALESCE((SELECT tenant FROM agents WHERE agents.id = agent_state.agent_id), '') WHERE tenant = ''")
+  let __c4 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b4 := exec_ddl_tolerant(db, "UPDATE agent_memory SET tenant = COALESCE((SELECT tenant FROM agents WHERE agents.id = agent_memory.agent_id), '') WHERE tenant = ''")
+  let __c5 := exec_ddl_tolerant(db, "ALTER TABLE notify_channels ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b5 := exec_ddl_tolerant(db, "UPDATE notify_channels SET tenant = COALESCE((SELECT org FROM accounts WHERE accounts.id = notify_channels.account), '') WHERE tenant = ''")
+  let __c6 := exec_ddl_tolerant(db, "ALTER TABLE notifications ADD COLUMN tenant TEXT NOT NULL DEFAULT ''")
+  let __b6 := exec_ddl_tolerant(db, "UPDATE notifications SET tenant = COALESCE((SELECT org FROM accounts WHERE accounts.id = notifications.account), '') WHERE tenant = ''")
+  ()
+}
+
+# GDPR-01: Row-Level Security on every per-tenant table, Postgres-only —
+# ENABLE/FORCE ROW LEVEL SECURITY and CREATE POLICY are unrecognised syntax on
+# SQLite, so on a SQLite handle every statement below errors and is silently
+# swallowed by exec_ddl_tolerant like the rest of this file's later
+# migrations; this keeps lex-soft portable across both engines from the same
+# migration code. The app connects as a restricted `ev_app` role (NOSUPERUSER
+# NOBYPASSRLS); the owner (`postgres`) always bypasses RLS regardless of
+# FORCE, which is why this function's own backfills above run unaffected by
+# the policies it creates here.
+#
+# `org_directory`, `partner_keys` and `partner_challenges` are deliberately
+# EXCLUDED: they are cross-org federation data by design (every org must read
+# every other org's directory entry / public key to verify a signed request),
+# not per-tenant data — RLS on them would break federation itself, not
+# protect anything.
+#
+# Two column families, same policy shape: `agents`/`device_certs` already
+# carry `tenant` (the original single-tenant-API-compatible column, e.g.
+# 'default'); the newer control-plane tables (`accounts`/`credentials`/
+# `connection_rate`, #59) already carry `org` — same concept, different
+# historical column name. Each policy just points at whichever column that
+# table already has.
+fn rls_tables() -> List[(Str, Str)] {
+  [("agents", "tenant"), ("device_certs", "tenant"), ("relationships", "tenant"), ("traces", "tenant"), ("agent_state", "tenant"), ("agent_memory", "tenant"), ("notify_channels", "tenant"), ("notifications", "tenant"), ("accounts", "org"), ("credentials", "org"), ("connection_rate", "org")]
+}
+
+fn rls_migrations(db :: Db) -> [sql, fs_write] Unit {
+  list.fold(rls_tables(), (), fn (acc :: Unit, pair :: (Str, Str)) -> [sql, fs_write] Unit {
+    match pair {
+      (table, col) => {
+        let __e := exec_ddl_tolerant(db, str.join(["ALTER TABLE ", table, " ENABLE ROW LEVEL SECURITY"], ""))
+        let __f := exec_ddl_tolerant(db, str.join(["ALTER TABLE ", table, " FORCE ROW LEVEL SECURITY"], ""))
+        let __d := exec_ddl_tolerant(db, str.join(["DROP POLICY IF EXISTS tenant_isolation ON ", table], ""))
+        let __c := exec_ddl_tolerant(db, str.join(["CREATE POLICY tenant_isolation ON ", table, " USING (", col, " = current_setting('app.tenant_id', true)) WITH CHECK (", col, " = current_setting('app.tenant_id', true))"], ""))
+        ()
+      },
+    }
+  })
+}
+
 fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
   match exec_ddl(db, ddl_agents()) {
     Err(e) => Err(e),
@@ -195,6 +262,8 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __pkeys := exec_ddl_tolerant(db, ddl_partner_keys())
                 let __pchal := exec_ddl_tolerant(db, ddl_partner_challenges())
                 let __odir := exec_ddl_tolerant(db, ddl_org_directory())
+                let __backfill := backfill_migrations(db)
+                let __rls := rls_migrations(db)
                 jobs.init_schema(db)
               },
             },
