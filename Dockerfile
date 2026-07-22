@@ -5,7 +5,7 @@
 
 FROM debian:12-slim
 
-ARG LEX_VERSION=0.10.5
+ARG LEX_VERSION=0.10.7
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \
