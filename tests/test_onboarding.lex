@@ -82,7 +82,7 @@ fn onboarded_token_is_audit_resolvable() -> [io, time, crypto, random, sql, fs_r
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
-      let r := fed.mount_federation(router.new(), db, cfg)
+      let r := fed.mount_federation(router.new(), db, db, cfg)
       let tok := token_of(r, "onboarded-org")
       if str.is_empty(tok) {
         Err("no token returned")
@@ -110,7 +110,7 @@ fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, f
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
-      let r := fed.mount_federation(router.new(), db, cfg)
+      let r := fed.mount_federation(router.new(), db, db, cfg)
       let statuses := list.map(list.range(0, 25), fn (_n :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
         post_connect(r, "flooder-org")
       })
@@ -141,7 +141,7 @@ fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, 
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
-      let r := fed.mount_federation(router.new(), db, cfg)
+      let r := fed.mount_federation(router.new(), db, db, cfg)
       let __first := post_connect(r, "upgraded-org")
       match identity.create_account(db, "upgraded-org", "upgraded-org", "upgraded-org", "pro") {
         Err(e) => Err(str.concat("upgrade failed: ", e)),
@@ -170,7 +170,7 @@ fn onboarded_agent_lands_in_its_org_tenant() -> [io, time, crypto, random, sql, 
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __m := migrate.run(db)
-      let r := fed.mount_federation(router.new(), db, demo_cfg())
+      let r := fed.mount_federation(router.new(), db, db, demo_cfg())
       let body := jv.stringify(JObj([("org", JStr("beta-corp")), ("scope", JStr("logistics")), ("agents", JList([JObj([("id", JStr("beta-agent-1")), ("kind", JStr("truck")), ("inbox_url", JStr("http://beta/agent-1/")), ("capabilities", JList([JStr("transport")]))])]))]))
       let __res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
       let beta_ids := ids_of(db, "beta-corp")
@@ -209,7 +209,7 @@ fn an_unproved_key_refuses_the_whole_request() -> [io, time, crypto, random, sql
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
-      let r := fed.mount_federation(router.new(), db, cfg)
+      let r := fed.mount_federation(router.new(), db, db, cfg)
       let body := jv.stringify(JObj([("org", JStr("impostor")), ("scope", JStr("logistics")), ("public_key", JStr("not-a-proved-key")), ("agents", JList([]))]))
       let res := router.dispatch(r, { body: body, method: "POST", path: "/connections", query: "", headers: map.new() })
       let bound := match pa.get_key(db, "impostor") {
@@ -236,7 +236,7 @@ fn a_proved_key_onboards() -> [io, time, crypto, random, sql, fs_read, fs_write,
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
-      let r := fed.mount_federation(router.new(), db, cfg)
+      let r := fed.mount_federation(router.new(), db, db, cfg)
       let seed := crypto.sha256(bytes.from_str("partner"))
       let pub := match ed.public_key_b64(seed) {
         Ok(p) => p,
