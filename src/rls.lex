@@ -30,12 +30,22 @@
 # onboarding — are unaffected either way; existing per-handler auth such as
 # AUDIT_KEY / DEVICE_ADMIN_KEY / conn-token verification is untouched).
 #
+# EVERY branch below sets the GUC — including to '' when no subject
+# resolves — never just skips it. set_config is SESSION-scoped, not
+# per-request: on a shared/reused connection, an unauthenticated request
+# that merely left the GUC untouched would silently inherit whatever the
+# PREVIOUS request (on the same connection) last set it to, which live
+# testing confirmed actually happens (an anonymous request right after an
+# authenticated one saw that caller's rows). Explicitly clearing it on
+# every non-resolving path closes that.
+#
 # Known limitation (shared with lex-tms's rls.lex, the reference
-# implementation this mirrors): set_config here is SESSION-scoped on a
-# shared connection, not transaction-local — under concurrent requests on one
-# connection there is a narrow window where the GUC could be read mid-flight
-# by another request. RLS is defense-in-depth on top of every handler's own
-# explicit tenant WHERE clause, not lex-soft's sole isolation boundary.
+# implementation this mirrors): set_config is still SESSION- not
+# transaction-scoped — under truly concurrent requests interleaved on one
+# connection there is a narrow window between one request's set_config and
+# its own queries where another request's set_config could land first. RLS
+# is defense-in-depth on top of every handler's own explicit tenant WHERE
+# clause, not lex-soft's sole isolation boundary.
 
 import "std.sql" as sql
 
@@ -47,14 +57,28 @@ import "lex-web/response" as resp
 
 import "./identity" as identity
 
+fn set_tenant_guc(serving_db :: Db, tenant :: Str) -> [sql] Unit {
+  let __rls := sql.query(serving_db, "SELECT set_config('app.tenant_id', $1, false)", [PStr(tenant)])
+  ()
+}
+
 fn before(owner_db :: Db, serving_db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent] mw.PreResult {
   match ctx.bearer_token(c) {
-    None => mw.Continue(c),
+    None => {
+      let __clear := set_tenant_guc(serving_db, "")
+      mw.Continue(c)
+    },
     Some(tok) => match identity.resolve_subject_in(owner_db, secrets, tok) {
-      Err(_) => mw.Continue(c),
-      Ok(None) => mw.Continue(c),
+      Err(_) => {
+        let __clear := set_tenant_guc(serving_db, "")
+        mw.Continue(c)
+      },
+      Ok(None) => {
+        let __clear := set_tenant_guc(serving_db, "")
+        mw.Continue(c)
+      },
       Ok(Some(subj)) => {
-        let __rls := sql.query(serving_db, "SELECT set_config('app.tenant_id', $1, false)", [PStr(subj.org)])
+        let __set := set_tenant_guc(serving_db, subj.org)
         mw.Continue(c)
       },
     },
