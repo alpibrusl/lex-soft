@@ -590,7 +590,20 @@ fn match_detail_json(rows :: List[DirRow], m :: mm.Match) -> jv.Json {
 # ── Federation routes ─────────────────────────────────────────────────────────
 # Mount the full federation surface onto an existing router. Call once, after a
 # domain pack has mounted its agents with `mount_agent`.
-fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> router.Router {
+# GDPR-01: `mdb` is the owner connection (bypasses RLS), used ONLY by the two
+# federation handshake writes (POST /peers, POST /connections) — these
+# register a NEW cross-org fact (a peer announcing itself, an org onboarding
+# for the first time) under a caller-CLAIMED org from the request body, before
+# any verified session/credential exists for it. RLS's WITH CHECK requires a
+# written row's tenant to equal the caller's own verified app.tenant_id, which
+# is unset for exactly these two routes (no bearer token exists yet to
+# resolve) — so writing through the RLS-restricted `db` would make every
+# handshake fail closed, not just cross-tenant ones. These writes are gated
+# instead by their own existing checks (contract/trust-level, signup_token,
+# rate_limited, key-binding proof), the same way they always have been; every
+# other route in this function (catalog reads, mount_agent dispatch) stays on
+# `db` as before.
+fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationConfig) -> router.Router {
   let base := cfg.base
   let org := cfg.org
   let with_key := router.route(r, "GET", "/.well-known/agent-key.json", fn (_c :: ctx.Ctx) -> resp.Response {
@@ -629,7 +642,7 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
             } else {
               trust.with_level(peer_contract0, peer_level)
             }
-            let __r := register_peer_json(db, j, jstr(j, "org"), jstr(j, "from_agent"), jstr(j, "role"), peer_contract)
+            let __r := register_peer_json(mdb, j, jstr(j, "org"), jstr(j, "from_agent"), jstr(j, "role"), peer_contract)
             resp.json(str.concat("{\"ok\":true,\"peer\":", str.concat(jv.stringify(JStr(id)), "}")))
           }
         }
@@ -644,10 +657,10 @@ fn mount_federation(r :: router.Router, db :: Db, cfg :: FederationConfig) -> ro
         if not str.is_empty(cfg.signup_token) and jstr(j, "signup_token") != cfg.signup_token {
           signup_refused_response()
         } else {
-          if rate_limited(db, req_org, time.now_str()) {
+          if rate_limited(mdb, req_org, time.now_str()) {
             rate_limited_response()
           } else {
-            onboard_connection(db, cfg, org, base, j, req_org)
+            onboard_connection(mdb, cfg, org, base, j, req_org)
           }
         }
       },

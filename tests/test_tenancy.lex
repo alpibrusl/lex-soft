@@ -287,7 +287,7 @@ fn tenant_scoped_discovery() -> [io, time, crypto, random, sql, fs_read, fs_writ
       let __m := migrate.run(db)
       let __1 := reg.register_in(db, "acme", "truck-1", "truck", "Truck 1", "http://x/1", ["logistics.truck.handle"])
       let __2 := reg.register_in(db, "voltgrid", "v2g-north", "v2g", "V2G North", "http://x/v", ["energy.v2g.dispatch"])
-      let r := fed.mount_federation(router.new(), db, demo_cfg())
+      let r := fed.mount_federation(router.new(), db, db, demo_cfg())
       let acme := router.dispatch(r, get_req("/peers", "tenant=acme"))
       let volt := router.dispatch(r, get_req("/.well-known/agents.json", "tenant=voltgrid"))
       let all := router.dispatch(r, get_req("/peers", ""))
