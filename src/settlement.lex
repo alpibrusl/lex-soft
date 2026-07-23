@@ -115,6 +115,27 @@ fn record_chargeback_dec(log :: tlog.Log, from_agent :: Str, to_agent :: Str, am
   }
 }
 
+# Node-side interaction record for a task the federation ROUTED to a mounted
+# agent whose own handler did NOT record a trail. A runner-backed handler
+# records via record_run (and embeds a `trail` artifact); a lightweight or
+# external-backed handler does not, so the node records the interaction here so
+# it still surfaces in /audit/interactions. Minimal chain — a2a.task.received →
+# cap.completed, actor-stamped with the agent, matching the payload keys the
+# audit rollup reads — with no llm.step, since the node does not run the model.
+fn record_dispatch(log :: tlog.Log, agent :: Str, skill :: Str, input :: Str, answer :: Str) -> [sql, time] Str {
+  let recv := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("input", JStr(input))]))
+  match tlog.append_actor(log, kinds.a2a_task_received(), agent, None, recv) {
+    Err(_) => "",
+    Ok(e1) => {
+      let done := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("result", JStr(answer))]))
+      match tlog.append_actor(log, kinds.cap_completed(), agent, Some(e1.id), done) {
+        Err(_) => "",
+        Ok(e2) => e2.id,
+      }
+    },
+  }
+}
+
 fn record_run(log :: tlog.Log, agent :: Str, skill :: Str, input :: Str, answer :: Str, tools :: List[Str]) -> [sql, time] Str {
   let recv := jv.stringify(JObj([("agent", JStr(agent)), ("skill", JStr(skill)), ("input", JStr(input))]))
   match tlog.append_actor(log, kinds.a2a_task_received(), agent, None, recv) {

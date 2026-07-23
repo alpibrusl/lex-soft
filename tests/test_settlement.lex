@@ -98,8 +98,29 @@ fn report_has_fields() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
   }
 }
 
+# A node-side dispatch record (#224) yields a verifiable trail_id, even though
+# its chain has no llm.step (the node routes but does not run the model).
+fn dispatch_records_and_verifies() -> [sql, fs_read, fs_write, time] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let log := st.trail_on(db)
+      let tid := st.record_dispatch(log, "quote-bot", "dispatch", "quote SFO->JFK", "eur 1200")
+      if str.is_empty(tid) {
+        Err("record_dispatch should return a non-empty trail_id")
+      } else {
+        if st.verify(log, tid) {
+          Ok(())
+        } else {
+          Err("a freshly recorded dispatch trail should verify")
+        }
+      }
+    },
+  }
+}
+
 fn run_all() -> [sql, fs_read, fs_write, time] Unit {
-  let results := [records_and_verifies(), mutated_trail_fails(), unknown_trail_denied(), report_has_fields()]
+  let results := [records_and_verifies(), mutated_trail_fails(), unknown_trail_denied(), report_has_fields(), dispatch_records_and_verifies()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

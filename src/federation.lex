@@ -433,7 +433,13 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
           rel.grants(db, from_agent, agent_id, capability)
         }
         if gated_ok {
-          resp.json(srv.dispatch_request(agent_def, c.body))
+          let out := srv.dispatch_request(agent_def, c.body)
+          let __audit := if str.contains(out, "\"trail_id\"") {
+            ""
+          } else {
+            settlement.record_dispatch(settlement.trail_on(db), agent_id, "dispatch", c.body, out)
+          }
+          resp.json(out)
         } else {
           forbidden_response()
         }
