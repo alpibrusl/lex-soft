@@ -6,6 +6,10 @@ unchanged core. The logistics pack (trucks, dispatch, trailers, custody,
 relay, CO2) shipped this way with zero core changes; this document turns
 that experience into the recipe.
 
+> Building the **agents** a pack mounts — the runner kit, plain handlers, the
+> external-agent audit adapter, and the hosted-agent pool — is covered in
+> [building-a-domain-agent.md](building-a-domain-agent.md).
+
 ## The pack contract
 
 A pack is a `pack.DomainPack` value in the HOST program (your product's
