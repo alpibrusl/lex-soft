@@ -48,8 +48,11 @@ product vocabulary.
 | `identity`, `partner_auth`, `conn_token` | Signed org/agent identity, partner authentication, scoped connection tokens |
 | `mesh`, `a2a`, `registry`, `federation`, `matchmaking`, `schema_registry` | Cross-org agent mesh: register, discover by capability, message over A2A, federate between nodes |
 | `relationships`, `arm`, `trust`, `resolver` | Agent relationship management: scoped roles, trust profiles, intent→role resolution (host-supplied vocab) |
-| `verdict`, `settlement`, `spend` | Evidence-gated settlement: re-derive proof over the trail, then gate spend on it |
+| `verdict`, `settlement`, `spend`, `ledger` | Evidence-gated settlement: re-derive proof over the trail, gate spend on it, and read a tenant-scoped finance view back out |
+| `evidence`, `genealogy` | Record domain evidence (documents, inspections, excursions) on the trail, and walk a unit's chain of transformations back to its declared origin |
+| `positions` | The structural vocabulary a pack is described in — a party occupies a *position*, the domain supplies its name |
 | `audit`, `trace`, `observability` | Tenant-scoped audit API, hash-chained interaction trace, observability |
+| `rls` | Postgres session-GUC bridge for the tenant RLS policies — tenant identity comes from the verified subject, never a caller-supplied header |
 | `metering` | Usage metering + billing preview against host-supplied plans |
 | `notifications`, `escalation`, `human_gateway` | Alerting bus and human-in-the-loop approvals for actions agents can't decide alone |
 | `scheduler`, `outbox` | Recurring agent prompts and reliable outbound delivery |
@@ -57,6 +60,8 @@ product vocabulary.
 | `dsr` | Data-subject-rights (GDPR) export/erase |
 | `device_http` | Signed device ingest for edge readings |
 | `pool`, `platform/*`, `a2a_dashboard` | Hosted-agent pool, platform server/inbox/client, and an operator dashboard |
+| `runner`, `llm_runner`, `state_store` | LLM handler factory for agent skills, its subprocess tool-loop entry point, and per-agent JSON state persistence |
+| `external_agent` | Front a third party's own A2A endpoint (Google-A2A, LangGraph, an OpenAI-SDK app) with an audited, platform-recording handler |
 
 See `src/soft.lex` for the facade re-exporting the common types.
 
