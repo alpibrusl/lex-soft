@@ -18,6 +18,10 @@
 #   - mount_ctl's HTTP surface: POST proposes (tenant from
 #     X-Tenant-Id), GET reads back, and a different tenant's header
 #     404s on the same id.
+#   - list_effects/pending_count (#115) are tenant-scoped and
+#     disposition respects the optional filter; the POST handler
+#     rejects an unrecognized cmp/on_falsify with 400 instead of
+#     silently coercing it via cmp_of_str/on_falsify_of_str.
 
 import "std.str" as str
 
@@ -404,6 +408,118 @@ fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write
   }
 }
 
+# list_effects/pending_count (#115) are tenant-scoped and the
+# disposition filter narrows correctly: tenant-a gets 2 contracts, one
+# judged to a final disposition, the other left pending; tenant-b gets
+# an unrelated, separate contract.
+fn list_and_pending_count_are_tenant_scoped() -> [net, io, sql, fs_write, time] Result[Unit, Str] {
+  match open_all() {
+    Err(e) => Err(e),
+    Ok(pair) => match pair {
+      (db, log) => {
+        let __pa := ctl.propose(db, "tenant-a", "charge-agent-1", contract_a(), 0)
+        let __pb := ctl.propose(db, "tenant-a", "charge-agent-1", contract_b(), 0)
+        let __pc := ctl.propose(db, "tenant-b", "charge-agent-2", contract_a(), 0)
+        match ctl.get_by_id(db, "tenant-a", contract_a().id) {
+          None => Err("contract_a vanished"),
+          Some(row_a) => {
+            let __judged := ctl.judge_and_record(db, log, row_a, 120000, observe_ok)
+            if list.len(ctl.list_effects(db, "tenant-a", "")) == 2 {
+              if list.len(ctl.list_effects(db, "tenant-a", "pending")) == 1 {
+                if list.len(ctl.list_effects(db, "tenant-b", "")) == 1 {
+                  match ctl.pending_count(db, "tenant-a") {
+                    Err(e) => Err(e),
+                    Ok(1) => match ctl.pending_count(db, "tenant-b") {
+                      Err(e) => Err(e),
+                      Ok(1) => Ok(()),
+                      Ok(n) => Err(str.concat("expected tenant-b pending_count 1, got ", int_to_str_local(n))),
+                    },
+                    Ok(n) => Err(str.concat("expected tenant-a pending_count 1, got ", int_to_str_local(n))),
+                  }
+                } else {
+                  Err("tenant-b's list_effects must not include tenant-a's contracts")
+                }
+              } else {
+                Err("expected exactly 1 pending contract for tenant-a after judging contract_a")
+              }
+            } else {
+              Err("expected exactly 2 contracts for tenant-a")
+            }
+          },
+        }
+      },
+    },
+  }
+}
+
+# The POST handler must reject an unrecognized cmp or on_falsify with
+# 400 rather than silently defaulting via cmp_of_str/on_falsify_of_str
+# (#115) — a safety-relevant predicate direction shouldn't flip on a
+# typo.
+fn http_rejects_invalid_predicate_fields() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __i := ctl.init(db)
+      let r := ctl.mount_ctl(router.new(), db)
+      let headers := map.from_list([("x-tenant-id", "tenant-a")])
+      let bad_cmp_body := "{\"action_id\":\"act-1\",\"class_key\":\"restart_session\",\"subsystem\":\"charger-07\",\"signal\":\"charger_power_kw_milli\",\"cmp\":\"sideways\",\"threshold_milli\":500,\"deadline_ms\":120000,\"confidence_pct\":85,\"on_falsify\":\"handoff\"}"
+      let bad_cmp := router.dispatch(r, { body: bad_cmp_body, method: "POST", path: "/ctl/contracts", query: "", headers: headers })
+      if bad_cmp.status == 400 {
+        let bad_of_body := "{\"action_id\":\"act-1\",\"class_key\":\"restart_session\",\"subsystem\":\"charger-07\",\"signal\":\"charger_power_kw_milli\",\"cmp\":\"above\",\"threshold_milli\":500,\"deadline_ms\":120000,\"confidence_pct\":85,\"on_falsify\":\"explode\"}"
+        let bad_of := router.dispatch(r, { body: bad_of_body, method: "POST", path: "/ctl/contracts", query: "", headers: headers })
+        if bad_of.status == 400 {
+          Ok(())
+        } else {
+          Err(str.concat("expected 400 for unrecognized on_falsify, got ", int_to_str_local(bad_of.status)))
+        }
+      } else {
+        Err(str.concat("expected 400 for unrecognized cmp, got ", int_to_str_local(bad_cmp.status)))
+      }
+    },
+  }
+}
+
+# GET /ctl/contracts (#115): tenant-scoped list, narrowed by the
+# optional ?disposition= filter, plus the pending_count health number.
+fn http_list_route_is_tenant_scoped() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __i := ctl.init(db)
+      let r := ctl.mount_ctl(router.new(), db)
+      let headers_a := map.from_list([("x-tenant-id", "tenant-a")])
+      let headers_b := map.from_list([("x-tenant-id", "tenant-b")])
+      let body_1 := "{\"action_id\":\"act-1\",\"class_key\":\"restart_session\",\"subsystem\":\"charger-07\",\"signal\":\"charger_power_kw_milli\",\"cmp\":\"above\",\"threshold_milli\":500,\"deadline_ms\":120000,\"confidence_pct\":85,\"on_falsify\":\"handoff\"}"
+      let body_2 := "{\"action_id\":\"act-2\",\"class_key\":\"restart_session\",\"subsystem\":\"charger-08\",\"signal\":\"charger_power_kw_milli\",\"cmp\":\"above\",\"threshold_milli\":500,\"deadline_ms\":120000,\"confidence_pct\":90,\"on_falsify\":\"handoff\"}"
+      let __p1 := router.dispatch(r, { body: body_1, method: "POST", path: "/ctl/contracts", query: "", headers: headers_a })
+      let __p2 := router.dispatch(r, { body: body_2, method: "POST", path: "/ctl/contracts", query: "", headers: headers_a })
+      let __p3 := router.dispatch(r, { body: body_1, method: "POST", path: "/ctl/contracts", query: "", headers: headers_b })
+      let listed_a := router.dispatch(r, { body: "", method: "GET", path: "/ctl/contracts", query: "", headers: headers_a })
+      if listed_a.status == 200 and json_int_field(listed_a.body, "count") == 2 and json_int_field(listed_a.body, "pending_count") == 2 {
+        let listed_b := router.dispatch(r, { body: "", method: "GET", path: "/ctl/contracts", query: "", headers: headers_b })
+        if listed_b.status == 200 and json_int_field(listed_b.body, "count") == 1 {
+          Ok(())
+        } else {
+          Err(str.concat("tenant-b's GET /ctl/contracts must only see its own contract: ", listed_b.body))
+        }
+      } else {
+        Err(str.concat("GET /ctl/contracts failed to reflect tenant-a's 2 pending contracts: ", listed_a.body))
+      }
+    },
+  }
+}
+
+fn json_int_field(body :: Str, key :: Str) -> Int {
+  match jv.parse(body) {
+    Err(_) => -1,
+    Ok(j) => match jv.get_field(j, key) {
+      Some(JInt(n)) => n,
+      _ => -1,
+    },
+  }
+}
+
 fn contract_id_of(body :: Str) -> Str {
   match jv.parse(body) {
     Err(_) => "",
@@ -426,7 +542,7 @@ fn int_to_str_local(n :: Int) -> Str {
 }
 
 fn run_all() -> [net, io, time, crypto, random, sql, fs_read, fs_write, concurrent, llm, proc] Unit {
-  let results := [propose_and_get_roundtrip(), propose_is_idempotent(), propose_distinct_content_yields_distinct_id(), tenant_isolation_on_shared_id(), pending_due_respects_deadline(), pending_due_is_tenant_isolated(), judge_and_record_materialises_and_notifies(), judge_and_record_falsifies(), judge_and_record_ambiguous_when_concurrent(), judge_and_record_skips_not_yet_due(), judge_and_record_is_not_double_fired(), http_surface_roundtrip()]
+  let results := [propose_and_get_roundtrip(), propose_is_idempotent(), propose_distinct_content_yields_distinct_id(), tenant_isolation_on_shared_id(), pending_due_respects_deadline(), pending_due_is_tenant_isolated(), judge_and_record_materialises_and_notifies(), judge_and_record_falsifies(), judge_and_record_ambiguous_when_concurrent(), judge_and_record_skips_not_yet_due(), judge_and_record_is_not_double_fired(), http_surface_roundtrip(), list_and_pending_count_are_tenant_scoped(), http_rejects_invalid_predicate_fields(), http_list_route_is_tenant_scoped()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

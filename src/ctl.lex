@@ -42,6 +42,8 @@ import "std.str" as str
 
 import "std.list" as list
 
+import "std.int" as int
+
 import "std.time" as time
 
 import "lex-schema/json_value" as jv
@@ -133,6 +135,34 @@ fn on_falsify_of_str(s :: Str) -> kct.OnFalsify
   }
 }
 
+# Known string sets `cmp_of_str`/`on_falsify_of_str` accept without
+# falling back to a default (#115). The POST handler checks these
+# BEFORE calling `cmp_of_str`/`on_falsify_of_str` so a typo (e.g.
+# "Above", or a misspelled on_falsify) is rejected rather than
+# silently coerced into a different predicate direction or recovery
+# policy — a safety-relevant footgun for a falsifiable predicate.
+fn is_valid_cmp(s :: Str) -> Bool
+  examples {
+    is_valid_cmp("above") => true,
+    is_valid_cmp("below") => true,
+    is_valid_cmp("Above") => false,
+    is_valid_cmp("garbage") => false
+  }
+{
+  s == "above" or s == "below"
+}
+
+fn is_valid_on_falsify(s :: Str) -> Bool
+  examples {
+    is_valid_on_falsify("hold") => true,
+    is_valid_on_falsify("handoff") => true,
+    is_valid_on_falsify("rollback") => true,
+    is_valid_on_falsify("garbage") => false
+  }
+{
+  s == "hold" or s == "handoff" or s == "rollback"
+}
+
 fn outcome_str(o :: kverify.Outcome) -> Str
   examples {
     outcome_str(Pending) => "pending",
@@ -194,6 +224,51 @@ fn pending_due(db :: Db, tenant :: Str, now_ms :: Int) -> [sql] List[EffectRow] 
   match rows {
     Err(_) => [],
     Ok(rs) => rs,
+  }
+}
+
+# Page size for GET /ctl/contracts — same cap as audit.lex's event pages.
+fn page_size() -> Int {
+  100
+}
+
+# Tenant-scoped listing (#115) for a dashboard: newest-proposed first,
+# optionally narrowed to one `disposition` ('' = all). Mirrors
+# `audit.query_events`'s optional-clause shape rather than building two
+# near-identical queries.
+fn list_effects(db :: Db, tenant :: Str, disposition :: Str) -> [sql] List[EffectRow] {
+  let disp_clause := if str.is_empty(disposition) {
+    ""
+  } else {
+    " AND disposition=?"
+  }
+  let disp_params := if str.is_empty(disposition) {
+    []
+  } else {
+    [PStr(disposition)]
+  }
+  let q := str.join(["SELECT ", cols(), " FROM ctl_effects WHERE tenant=?", disp_clause, " ORDER BY proposed_at_ms DESC LIMIT ", int.to_str(page_size())], "")
+  let rows :: Result[List[EffectRow], SqlError] := sql.query(db, q, list.concat([PStr(tenant)], disp_params))
+  match rows {
+    Err(_) => [],
+    Ok(rs) => rs,
+  }
+}
+
+type CountRow = { n :: Int }
+
+# Tenant-scoped pending count (#115) — the health/status number a
+# dashboard wants without paging through `list_effects`, same role as
+# `outbox.pending_count`.
+fn pending_count(db :: Db, tenant :: Str) -> [sql] Result[Int, Str] {
+  let q := "SELECT COUNT(*) AS n FROM ctl_effects WHERE tenant=? AND disposition='pending'"
+  let rows :: Result[List[CountRow], SqlError] := sql.query(db, q, [PStr(tenant)])
+  match rows {
+    Err(e) => Err(e.message),
+    Ok(rs) => match list.head(rs) {
+      None => Ok(0),
+      Some(r) => Ok(r.n),
+    },
   }
 }
 
@@ -309,11 +384,12 @@ fn effect_row_json(r :: EffectRow) -> jv.Json {
 #                        signal, cmp, threshold_milli, deadline_ms,
 #                        confidence_pct, on_falsify}
 # GET  /ctl/contracts/:id
+# GET  /ctl/contracts      ?disposition= (optional filter; '' = all)
 #
-# Tenant comes from the `X-Tenant-Id` header on BOTH routes (#111),
-# same convention as `device_http.lex` — not from the request body,
-# where a caller could claim any tenant it likes regardless of who it
-# actually authenticated as.
+# Tenant comes from the `X-Tenant-Id` header on ALL THREE routes
+# (#111), same convention as `device_http.lex` — not from the request
+# body or query string, where a caller could claim any tenant it likes
+# regardless of who it actually authenticated as.
 fn mount_ctl(r :: router.Router, db :: Db) -> router.Router {
   let with_post := router.route_effectful(r, "POST", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match jv.parse(c.body) {
@@ -323,27 +399,45 @@ fn mount_ctl(r :: router.Router, db :: Db) -> router.Router {
         let class_key := jstr(j, "class_key")
         let subsystem := jstr(j, "subsystem")
         let signal := jstr(j, "signal")
+        let cmp_raw := jstr(j, "cmp")
+        let on_falsify_raw := jstr(j, "on_falsify")
         if str.is_empty(action_id) or str.is_empty(class_key) or str.is_empty(subsystem) or str.is_empty(signal) {
           resp.bad_request("{\"error\":\"action_id, class_key, subsystem, signal are required\"}")
         } else {
-          let tenant := ctx.header_or(c, "X-Tenant-Id", "default")
-          let predicate := { signal: signal, cmp: cmp_of_str(jstr(j, "cmp")), threshold_milli: jint(j, "threshold_milli") }
-          let contract := kct.make(action_id, class_key, subsystem, predicate, jint(j, "deadline_ms"), jint(j, "confidence_pct"), on_falsify_of_str(jstr(j, "on_falsify")))
-          match propose(db, tenant, jstr(j, "proposer_id"), contract, time.now_ms()) {
-            Err(e) => resp.json(str.concat("{\"error\":", str.concat(jv.stringify(JStr(e)), "}"))),
-            Ok(_) => resp.json(jv.stringify(JObj([("ok", JBool(true)), ("contract_id", JStr(contract.id))]))),
+          if not is_valid_cmp(cmp_raw) {
+            resp.bad_request("{\"error\":\"cmp must be one of: above, below\"}")
+          } else {
+            if not is_valid_on_falsify(on_falsify_raw) {
+              resp.bad_request("{\"error\":\"on_falsify must be one of: hold, handoff, rollback\"}")
+            } else {
+              let tenant := ctx.header_or(c, "X-Tenant-Id", "default")
+              let predicate := { signal: signal, cmp: cmp_of_str(cmp_raw), threshold_milli: jint(j, "threshold_milli") }
+              let contract := kct.make(action_id, class_key, subsystem, predicate, jint(j, "deadline_ms"), jint(j, "confidence_pct"), on_falsify_of_str(on_falsify_raw))
+              match propose(db, tenant, jstr(j, "proposer_id"), contract, time.now_ms()) {
+                Err(e) => resp.json(str.concat("{\"error\":", str.concat(jv.stringify(JStr(e)), "}"))),
+                Ok(_) => resp.json(jv.stringify(JObj([("ok", JBool(true)), ("contract_id", JStr(contract.id))]))),
+              }
+            }
           }
         }
       },
     }
   })
-  router.route_effectful(with_post, "GET", "/ctl/contracts/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_get_one := router.route_effectful(with_post, "GET", "/ctl/contracts/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
     match ctx.path_param(c, "id") {
       None => resp.not_found(),
       Some(id) => match get_by_id(db, ctx.header_or(c, "X-Tenant-Id", "default"), id) {
         None => resp.not_found(),
         Some(row) => resp.json(jv.stringify(effect_row_json(row))),
       },
+    }
+  })
+  router.route_effectful(with_get_one, "GET", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    let tenant := ctx.header_or(c, "X-Tenant-Id", "default")
+    let rows := list_effects(db, tenant, ctx.query_param_or(c, "disposition", ""))
+    match pending_count(db, tenant) {
+      Err(e) => resp.json_status(500, str.concat("{\"error\":", str.concat(jv.stringify(JStr(e)), "}"))),
+      Ok(pending) => resp.json(jv.stringify(JObj([("tenant", JStr(tenant)), ("count", JInt(list.len(rows))), ("pending_count", JInt(pending)), ("effects", JList(list.map(rows, effect_row_json)))]))),
     }
   })
 }
