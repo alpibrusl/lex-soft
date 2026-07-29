@@ -202,8 +202,17 @@ fn backfill_migrations(db :: Db) -> [sql, fs_write] Unit {
 # `connection_rate`, #59) already carry `org` — same concept, different
 # historical column name. Each policy just points at whichever column that
 # table already has.
+# `ctl_effects` (#112) is host-opt-in — created by `ctl.init`, not by
+# `migrate.run` — but listed here anyway, since `ctl.init` itself calls
+# `rls_migrations` again once the table exists (see ctl.lex): every
+# statement here goes through `exec_ddl_tolerant`, so a host that never
+# calls `ctl.init` sees the `ctl_effects` statements silently swallowed
+# as "relation does not exist", the same as SQLite silently swallows
+# RLS syntax entirely. A host that DOES opt in gets the same Postgres
+# RLS backstop as every other per-tenant table, rather than an
+# unexplained exception like the federation tables below.
 fn rls_tables() -> List[(Str, Str)] {
-  [("agents", "tenant"), ("device_certs", "tenant"), ("relationships", "tenant"), ("traces", "tenant"), ("agent_state", "tenant"), ("agent_memory", "tenant"), ("notify_channels", "tenant"), ("notifications", "tenant"), ("accounts", "org"), ("credentials", "org"), ("connection_rate", "org")]
+  [("agents", "tenant"), ("device_certs", "tenant"), ("relationships", "tenant"), ("traces", "tenant"), ("agent_state", "tenant"), ("agent_memory", "tenant"), ("notify_channels", "tenant"), ("notifications", "tenant"), ("ctl_effects", "tenant"), ("accounts", "org"), ("credentials", "org"), ("connection_rate", "org")]
 }
 
 fn rls_migrations(db :: Db) -> [sql, fs_write] Unit {

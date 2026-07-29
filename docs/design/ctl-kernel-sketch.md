@@ -84,18 +84,49 @@ checklist item is unblocked and complete;
 [lex-loom#126](https://github.com/alpibrusl/lex-loom/issues/126) can
 treat soft's co-validation as satisfied for the current API shape.
 
+## Task 2: the real implementation (`src/ctl.lex`)
+
+The paper sketch above stopped at naming the `mount_ctl` seam. That
+module now exists — `src/ctl.lex` — and is a real, host-opt-in
+integration: SQL storage for proposed effect contracts, a
+`judge_and_record` pass calling lex-ctl's `verify.judge` unmodified
+against a host-supplied `observe` closure, a trail record of the
+disposition (same substrate as `verdict.lex`/`evidence.lex`), an
+outbox notification back to the proposing agent, and
+`mount_ctl(router, db)` exposing `POST`/`GET /ctl/contracts`. Not
+covered by the paper exercise's own type-checking-is-the-test claim —
+this module has SQL, HTTP, and multi-tenant concerns the sketch never
+touched, so it carries its own test suite (`tests/test_ctl.lex`).
+
+Two real bugs were found and fixed while adopting this into a
+multi-tenant host, worth recording since they're the kind of gap a
+pure paper exercise (single tenant, no persistence) can't surface:
+
+- **The kernel's content-addressed id has no tenant in it, by design**
+  (it's meant to match the same hash lex-loom would compute for the
+  same logical prediction — tenant-agnostic on purpose). Storing it as
+  a bare primary key meant two tenants proposing bit-for-bit identical
+  contract content would collide and silently share a row. Fixed by
+  making the storage key `(tenant, id)`, with tenant read from the
+  `X-Tenant-Id` header (not the request body, where a caller could
+  claim any tenant) on both the `POST` and `GET` routes.
+- **A trail-write or outbox-enqueue failure after a disposition was
+  persisted was silently swallowed** — once a contract's disposition
+  flips away from `'pending'`, nothing ever re-selects it, so a
+  dropped failure there was permanent and invisible. `judge_and_record`
+  now propagates a distinct `Err` for each side effect instead.
+
 ## Explicitly out of scope here (soft#106's remaining tasks)
 
-This sketch stops at naming the seams; none of the following are
-attempted:
+None of the following are attempted yet:
 
-- `mount_ctl(router, db, …)` — the real host-opt-in module wiring the
-  kernel verifier to soft's scheduler (`lex-jobs`) and outbox.
 - Routing `Propose`/`Escalate` outcomes through `escalation` /
-  `human_gateway` — the sketch's `on_falsify: Handoff` names this seam
-  but doesn't call into it.
+  `human_gateway`, and the trust-boundary rule that the gate consults
+  only `cap.gate` + action classification, never message narrative.
+  `src/ctl.lex` deliberately never imports `lex-ctl/src/tier` or
+  `lex-ctl/src/stability` — this is layered on top of the disposition
+  history it persists, not bundled into it.
 - `verdict` ↔ contract-disposition interplay — a falsified effect
   contract as first-class evidence in settlement verdicts.
 
-Each is its own task on #106 and depends on real backend wiring this
-paper exercise deliberately has none of.
+Each is its own task on #106.
