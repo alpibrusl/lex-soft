@@ -22,3 +22,4 @@ lex-games  = { git = "https://github.com/alpibrusl/lex-games" }
 lex-guard  = { git = "https://github.com/alpibrusl/lex-guard" }
 lex-mcp    = { git = "https://github.com/alpibrusl/lex-mcp" }
 lex-agent-llm = { git = "https://github.com/alpibrusl/lex-agent-llm" }
+lex-ctl    = { git = "https://github.com/alpibrusl/lex-ctl" }
