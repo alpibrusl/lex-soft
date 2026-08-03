@@ -17,6 +17,8 @@
 
 import "std.list" as list
 
+import "lex-schema/json_value" as jv
+
 import "lex-web/router" as router
 
 import "lex-agent/src/server" as srv
@@ -53,5 +55,35 @@ fn agent_count(pack :: DomainPack) -> Int {
   list.fold(pack.personas, 0, fn (acc :: Int, p :: Persona) -> Int {
     acc + list.len(p.ids)
   })
+}
+
+# ── Pack info: the agent-domain manifest ──────────────────────────────────────
+# The DomainPack counterpart of pos.PackManifest: a structural "here is my
+# vocabulary" declaration for an AGENT-persona pack, so consoles can render a
+# domain's personas (labels, taglines, starter prompts) from the catalogue
+# instead of hand-authoring per-kind tables. Additive — DomainPack itself is
+# unchanged, and a pack that publishes no PackInfo still mounts fine; its
+# personas just render with generic labels downstream.
+# One persona kind as a console should present it. `kind` matches the agent
+# kind the pack's registry seed writes (and the deployment's role provisioning
+# uses); `suggested_prompts` are starter messages a console may offer — the
+# persona must handle them, so they live with the pack, not the frontend.
+type PersonaInfo = { kind :: Str, title :: Str, tagline :: Str, suggested_prompts :: List[Str] }
+
+# The whole agent-domain, catalogue-ready. `name` matches DomainPack.name.
+type PackInfo = { name :: Str, title :: Str, tagline :: Str, personas :: List[PersonaInfo] }
+
+fn persona_info_json(p :: PersonaInfo) -> jv.Json {
+  JObj([("kind", JStr(p.kind)), ("title", JStr(p.title)), ("tagline", JStr(p.tagline)), ("suggested_prompts", JList(list.map(p.suggested_prompts, fn (s :: Str) -> jv.Json {
+    JStr(s)
+  })))])
+}
+
+fn info_json(i :: PackInfo) -> jv.Json {
+  JObj([("name", JStr(i.name)), ("title", JStr(i.title)), ("tagline", JStr(i.tagline)), ("personas", JList(list.map(i.personas, persona_info_json)))])
+}
+
+fn infos_json(is :: List[PackInfo]) -> jv.Json {
+  JList(list.map(is, info_json))
 }
 
