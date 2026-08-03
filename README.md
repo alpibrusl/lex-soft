@@ -37,6 +37,27 @@ Three things happen across the boundary between two companies:
 Integration and coordination are the category; evidence-gated settlement is the
 capability that makes automating it trustworthy.
 
+## In the wider Lex ecosystem
+
+lex-soft is the **interactions-between-companies** layer — its counterpart on
+the single-company side is [lex-loom](https://github.com/alpibrusl/lex-loom),
+which runs one company's own build/operate loop. The two already share a real
+piece of mechanism: `src/ctl.lex` mounts
+[`lex-ctl`](https://github.com/alpibrusl/lex-ctl), the domain-agnostic
+proposed-effect contract/verify kernel loom built for its own Operate loop —
+lex-soft is a deliberate second consumer, chosen specifically to prove the
+kernel's API stays domain-agnostic (see
+[`docs/design/ctl-kernel-sketch.md`](docs/design/ctl-kernel-sketch.md)).
+
+lex-soft has no dependency on [lex-os](https://github.com/alpibrusl/lex-os)
+today. Its host-mounted tool modules are already effect-scoped narrowly
+(`[net, io, proc]`, no direct `sql`), which maps cleanly onto lex-os's grant
+model if agent workloads are ever run inside its sandboxed boxes — that wiring
+doesn't exist yet, it just isn't precluded by anything here.
+
+For the full picture of how lex-soft, lex-loom, lex-ctl, and lex-os fit
+together, see [lex-lang's ecosystem model](https://github.com/alpibrusl/lex-lang/blob/main/docs/design/ecosystem-model.md).
+
 ## Capabilities (mechanism, host-mounted)
 
 Everything is a host-opt-in `mount_*(router, db, …)` module — a host wires in
