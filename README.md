@@ -55,6 +55,9 @@ today. Its host-mounted tool modules are already effect-scoped narrowly
 model if agent workloads are ever run inside its sandboxed boxes — that wiring
 doesn't exist yet, it just isn't precluded by anything here.
 
+For the full picture of how lex-soft, lex-loom, lex-ctl, and lex-os fit
+together, see [lex-lang's ecosystem model](https://github.com/alpibrusl/lex-lang/blob/main/docs/design/ecosystem-model.md).
+
 ## Capabilities (mechanism, host-mounted)
 
 Everything is a host-opt-in `mount_*(router, db, …)` module — a host wires in
