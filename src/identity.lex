@@ -17,6 +17,18 @@
 #                  by the conn-token jti so revocation is authoritative (a
 #                  revoked row → resolve denies, even though the JWT still
 #                  verifies cryptographically and has not expired).
+#
+# NAMING COLLISION (lex-loom#178): lex-loom also has a `src/identity.lex` —
+# a DIFFERENT thing at a DIFFERENT scope. This file is the VERIFIED, CROSS-ORG
+# identity a company presents to other companies on the mesh: an `org`-scoped
+# account + issued credential, checkable by any other mesh participant. loom's
+# identity.lex is INTERNAL to one company: a did:lex minted per pool agent,
+# scoped to that company's own agent Cast, whose "reputation" is a count of
+# that company's own verified sprint attestations — never presented outward
+# and never interchangeable with an `org` here. See lex-loom's
+# docs/design/soft-os-aware-agents.md ("border between loom and soft") for
+# the fuller framing; kept as two same-named-but-different-scope files rather
+# than renamed.
 
 import "std.sql" as sql
 
