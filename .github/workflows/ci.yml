@@ -6,6 +6,9 @@ on:
   pull_request:
 
 jobs:
+  security:
+    uses: alpibrusl/lex-infra/.github/workflows/security-scan.yml@main
+
   build:
     runs-on: ubuntu-latest
     steps:
