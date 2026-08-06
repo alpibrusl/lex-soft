@@ -14,6 +14,8 @@
 
 import "std.str" as str
 
+import "std.int" as int
+
 import "std.list" as list
 
 import "std.map" as map
@@ -49,6 +51,8 @@ import "../src/registry" as reg
 import "../src/relationships" as rel
 
 import "../src/federation" as fed
+
+import "../src/identity" as identity
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 fn ids_of(refs :: List[reg.AgentRef]) -> List[Str] {
@@ -216,6 +220,60 @@ fn http_gate_revokes_access() -> [io, time, crypto, random, sql, fs_read, fs_wri
   }
 }
 
+# Audit H-3: a caller must not be able to read or act on another tenant's
+# agent, whether by presenting no credential at all or by presenting a VALID
+# credential that just belongs to the wrong org. Exercises the /activity route
+# specifically because, before this fix, it had no auth check whatsoever —
+# only the RPC dispatch route did, and even that one never checked ownership.
+fn call_activity_with_token(r :: router.Router, agent_id :: Str, token :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+  let headers := if str.is_empty(token) {
+    map.from_list([])
+  } else {
+    map.from_list([("authorization", str.concat("Bearer ", token))])
+  }
+  let req := { body: "", method: "GET", path: str.concat("/agents/", str.concat(agent_id, "/activity")), query: "", headers: headers }
+  let res := router.dispatch(r, req)
+  res.status
+}
+
+fn cross_tenant_agent_access_is_denied() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+  match sql.open(":memory:") {
+    Err(_) => Err("db open failed"),
+    Ok(db) => {
+      let __m := migrate.run(db)
+      let cfg := demo_cfg()
+      let __reg := reg.register_in(db, "acme", "depot-2", "depot", "Depot 2", "http://x/d2", ["logistics.depot.handle"])
+      let r := fed.mount_agent(router.new(), db, ping_def("depot-2"), "depot-2", cfg)
+      let no_token := call_activity_with_token(r, "depot-2", "")
+      if no_token != 401 {
+        Err(str.concat("tenant-scoped agent with no token: expected 401, got ", int.to_str(no_token)))
+      } else {
+        match identity.issue_credential(db, cfg.secret, "acme-platform", "acct-beta", "beta", "", "full", 3600) {
+          Err(e) => Err(str.concat("issue beta credential failed: ", e)),
+          Ok(beta_cred) => {
+            let wrong_tenant := call_activity_with_token(r, "depot-2", beta_cred.token)
+            if wrong_tenant != 401 {
+              Err(str.concat("cross-tenant credential: expected 401, got ", int.to_str(wrong_tenant)))
+            } else {
+              match identity.issue_credential(db, cfg.secret, "acme-platform", "acct-acme", "acme", "", "full", 3600) {
+                Err(e) => Err(str.concat("issue acme credential failed: ", e)),
+                Ok(acme_cred) => {
+                  let right_tenant := call_activity_with_token(r, "depot-2", acme_cred.token)
+                  if right_tenant == 200 {
+                    Ok(())
+                  } else {
+                    Err(str.concat("same-tenant credential: expected 200, got ", int.to_str(right_tenant)))
+                  }
+                },
+              }
+            }
+          },
+        }
+      }
+    },
+  }
+}
+
 fn int_str(n :: Int) -> Str {
   if n == 200 {
     "200"
@@ -347,7 +405,7 @@ fn bstr(b :: Bool) -> Str {
 }
 
 fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
-  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery(), cross_tenant_id_claim_is_refused()]
+  let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), cross_tenant_agent_access_is_denied(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery(), cross_tenant_id_claim_is_refused()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
       Ok(_) => acc,

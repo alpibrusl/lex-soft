@@ -391,6 +391,46 @@ fn register_peer_json(db :: Db, aj :: jv.Json, tenant :: Str, link_from :: Str, 
   }
 }
 
+# Whether the caller may act on `agent_id`: either a partner-federation token
+# (verified by pa.verify — legitimately cross-tenant, gated separately by
+# relationship grants further down) or a resolved platform/tenant credential
+# whose org matches the target agent's own tenant. An agent registered under a
+# real tenant (not the single-tenant "default") always requires ONE of these,
+# regardless of `require_token` — that flag only relaxes the untenanted/demo
+# case. Without this, any caller who knew (or guessed) an agent id could read
+# or act on another tenant's agent with no credential at all — audit H-3.
+fn caller_authorized(db :: Db, c :: ctx.Ctx, agent_id :: Str, cfg :: FederationConfig) -> [sql, fs_read, time] Bool {
+  let target_tenant := match reg.find_by_id(db, agent_id) {
+    Ok(Some(a)) => a.tenant,
+    _ => "default",
+  }
+  let is_tenant_scoped := target_tenant != "default" and not str.is_empty(target_tenant)
+  let tok := match ctx.bearer_token(c) {
+    Some(s) => s,
+    None => "",
+  }
+  if str.is_empty(tok) {
+    not cfg.require_token and not is_tenant_scoped
+  } else {
+    let resolved_org := if cfg.hs256_dispatch {
+      match identity.resolve_subject_in(db, keyring(cfg), tok) {
+        Ok(Some(s)) => if str.is_empty(s.agent_id) {
+          Some(s.org)
+        } else {
+          None
+        },
+        _ => None,
+      }
+    } else {
+      None
+    }
+    match resolved_org {
+      Some(org) => org == target_tenant,
+      None => pa.verify(db, tok),
+    }
+  }
+}
+
 # ── Agent mount ───────────────────────────────────────────────────────────────
 # Mount an agent onto the router at /agents/:id/.well-known/agent.json (GET,
 # pure) and /agents/:id/ (POST, effectful A2A dispatch), plus activity/remember.
@@ -408,22 +448,7 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
     if str.is_empty(c.body) {
       resp.bad_request("{\"error\":\"empty body\"}")
     } else {
-      let tok := match ctx.bearer_token(c) {
-        Some(s) => s,
-        None => "",
-      }
-      let authed := if str.is_empty(tok) {
-        not cfg.require_token
-      } else {
-        if cfg.hs256_dispatch {
-          match identity.resolve_subject_in(db, keyring(cfg), tok) {
-            Ok(Some(_)) => true,
-            _ => pa.verify(db, tok),
-          }
-        } else {
-          pa.verify(db, tok)
-        }
-      }
+      let authed := caller_authorized(db, c, agent_id, cfg)
       if authed {
         let from_agent := ctx.header_or(c, "x-from-agent", "")
         let capability := ctx.header_or(c, "x-capability", "")
@@ -448,30 +473,42 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       }
     }
   })
-  let with_activity := router.route_effectful(with_rpc, "GET", activity_path, fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    resp.json(trace.recent_by_agent(db, agent_id, 60))
+  let with_activity := router.route_effectful(with_rpc, "GET", activity_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    if caller_authorized(db, c, agent_id, cfg) {
+      resp.json(trace.recent_by_agent(db, agent_id, 60))
+    } else {
+      unauthorized_response()
+    }
   })
   let with_remember := router.route_effectful(with_activity, "POST", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    let bodyj := match jv.parse(c.body) {
-      Ok(j) => j,
-      Err(_) => JNull,
-    }
-    let sfield := fn (k :: Str) -> Str {
-      match jv.get_field(bodyj, k) {
-        Some(JStr(s)) => s,
-        _ => "",
+    if caller_authorized(db, c, agent_id, cfg) {
+      let bodyj := match jv.parse(c.body) {
+        Ok(j) => j,
+        Err(_) => JNull,
       }
-    }
-    let fact := sfield("fact")
-    if str.is_empty(str.trim(fact)) {
-      resp.bad_request("{\"error\":\"fact is required\"}")
+      let sfield := fn (k :: Str) -> Str {
+        match jv.get_field(bodyj, k) {
+          Some(JStr(s)) => s,
+          _ => "",
+        }
+      }
+      let fact := sfield("fact")
+      if str.is_empty(str.trim(fact)) {
+        resp.bad_request("{\"error\":\"fact is required\"}")
+      } else {
+        let __r := trace.remember_kv(db, agent_id, sfield("scope"), sfield("key"), fact, sfield("type"), sfield("importance"), sfield("expires_at"))
+        resp.json("{\"ok\":true}")
+      }
     } else {
-      let __r := trace.remember_kv(db, agent_id, sfield("scope"), sfield("key"), fact, sfield("type"), sfield("importance"), sfield("expires_at"))
-      resp.json("{\"ok\":true}")
+      unauthorized_response()
     }
   })
-  router.route_effectful(with_remember, "GET", remember_path, fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
-    resp.json(str.concat("{\"agent\":\"", str.concat(agent_id, str.concat("\",\"memory\":", str.concat(trace.recall_memory_json(db, agent_id, 50), "}")))))
+  router.route_effectful(with_remember, "GET", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+    if caller_authorized(db, c, agent_id, cfg) {
+      resp.json(str.concat("{\"agent\":\"", str.concat(agent_id, str.concat("\",\"memory\":", str.concat(trace.recall_memory_json(db, agent_id, 50), "}")))))
+    } else {
+      unauthorized_response()
+    }
   })
 }
 
