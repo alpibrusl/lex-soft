@@ -45,11 +45,12 @@ fn ddl_traces_idx() -> Str {
 # Durable per-agent memory: facts the agent should remember across conversations
 # (preferences, assignments, lessons), recalled into the system prompt each turn.
 #
-# lex-soft#136: this table's shape and the reads/writes against it now live in
-# lex-agent/src/memory (lex-agent#26/#28) — trace.lex's remember_fact/
-# remember_kv/recall_facts_text/recall_memory_json are thin wrappers over it.
-# `content`/`key`/`kind` are lex-agent's column names (this table predates
-# that module and used `fact`/`mkey` with no `kind` dimension at all — the
+# lex-soft#136/#138: this table's shape and the reads/writes against it now
+# live in lex-memory/src/memory (extracted from lex-agent/src/memory, see
+# alpibrusl/lex-memory#1) — trace.lex's remember_fact/remember_kv/
+# recall_facts_text/recall_memory_json are thin wrappers over it.
+# `content`/`key`/`kind` are that module's column names (this table predates
+# it and used `fact`/`mkey` with no `kind` dimension at all — the
 # rename/backfill migration is below, in `run`). Columns beyond lex-agent's
 # own (id, agent_id, kind, key, content, ts, mtype, importance, scope,
 # superseded, expires_at) are this table's own: `updated_at` (unused by the
@@ -78,8 +79,8 @@ fn ddl_agent_memory_key_idx() -> Str {
   "CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(agent_id, scope, key, superseded)"
 }
 
-# lex-soft#136: bring a table created before the lex-agent/src/memory
-# migration up to its column names. RENAME COLUMN is identical syntax on
+# lex-soft#136: bring a table created before the shared memory module's
+# migration up to its column names (module now lex-memory/src/memory). RENAME COLUMN is identical syntax on
 # SQLite and Postgres. Tolerant/idempotent like the rest of this file — a
 # fresh install's `ddl_agent_memory` already has the new names, so every
 # statement here errors (column doesn't exist / already exists) and is

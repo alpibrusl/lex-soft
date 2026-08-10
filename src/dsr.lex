@@ -69,10 +69,11 @@ fn subject_traces(db :: Db, agent_id :: Str) -> [sql, fs_read] List[TraceRow] {
 }
 
 # lex-soft#136: agent_memory's PII column is `content` (was `fact`) and its
-# keyed-upsert column is `key` (was `mkey`) since the migration onto
-# lex-agent/src/memory's shared schema — see migrate.lex's
-# rename_agent_memory_columns. The exported/erased JSON shape (mem_json's
-# "fact"/"key" field names) is unchanged; only the underlying columns moved.
+# keyed-upsert column is `key` (was `mkey`) since the migration onto the
+# shared memory module's (now lex-memory/src/memory) schema — see
+# migrate.lex's rename_agent_memory_columns. The exported/erased JSON shape
+# (mem_json's "fact"/"key" field names) is unchanged; only the underlying
+# columns moved.
 fn subject_memory(db :: Db, agent_id :: Str) -> [sql, fs_read] List[MemRow] {
   let q := "SELECT id, content, ts, key, mtype, importance, scope, expires_at FROM agent_memory WHERE agent_id=? ORDER BY ts"
   let rows :: Result[List[MemRow], SqlError] := sql.query(db, q, [PStr(agent_id)])
