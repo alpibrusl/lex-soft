@@ -18,7 +18,7 @@ import "lex-schema/json_value" as jv
 
 import "lex-orm/src/connection" as conn
 
-import "lex-agent/src/memory" as mem
+import "lex-memory/src/memory" as mem
 
 import "./settlement" as settlement
 
@@ -90,7 +90,8 @@ fn recent_messages_json_for(db :: Db, agent_id :: Str, ctx :: Str, n :: Int) -> 
 }
 
 # ---- Durable memory --------------------------------------------------
-# Delegates to lex-agent/src/memory (lex-agent#26/#28) — the shared,
+# Delegates to lex-memory/src/memory (alpibrusl/lex-memory#1 — extracted out
+# of lex-agent once a second unrelated consumer needed it) — the shared,
 # cross-repo memory primitive lex-loom already consumes directly, extended to
 # cover what this module needed (importance/scope/expiry/supersession). `kind`
 # is fixed to one constant for every write through this module: soft's domain

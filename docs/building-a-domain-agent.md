@@ -61,7 +61,9 @@ let quoter :: pack.Persona := { ids: ["quote-01"], build: fn (d :: Db, id :: Str
    `contextId` — turns from other conversations never leak in),
 2. builds the system prompt (persona + state + durable memory — `trace.lex`'s
    `remember_fact`/`remember_kv`/`recall_facts_text`/`recall_memory_json` are
-   thin wrappers over [`lex-agent/src/memory`](https://github.com/alpibrusl/lex-agent/blob/main/src/memory.lex),
+   thin wrappers over [`lex-memory/src/memory`](https://github.com/alpibrusl/lex-memory/blob/main/src/memory.lex)
+   (extracted from `lex-agent/src/memory` once a second unrelated consumer
+   needed it — see [alpibrusl/lex-memory#1](https://github.com/alpibrusl/lex-memory/issues/1)),
    the same shared memory primitive `lex-loom` consumes directly — importance-
    ranked recall, scoping, expiry, and keep-history-on-overwrite all live
    there, not in this repo),

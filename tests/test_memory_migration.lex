@@ -1,5 +1,6 @@
 # tests/test_memory_migration.lex — lex-soft#136: agent_memory's columns
-# moved from (fact, mkey) to lex-agent/src/memory's (content, key) naming, via
+# moved from (fact, mkey) to the shared memory module's (content, key)
+# naming (module now lex-memory/src/memory, née lex-agent/src/memory), via
 # migrate.lex's rename_agent_memory_columns. Every other test in this suite
 # opens a FRESH `:memory:` db, so migrate.run's CREATE TABLE always produces
 # the new shape directly — the RENAME path is never actually exercised. This
