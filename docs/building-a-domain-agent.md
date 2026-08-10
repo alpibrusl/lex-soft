@@ -59,7 +59,12 @@ let quoter :: pack.Persona := { ids: ["quote-01"], build: fn (d :: Db, id :: Str
 
 1. loads agent state + the *conversation's* recent history (keyed on the A2A
    `contextId` — turns from other conversations never leak in),
-2. builds the system prompt (persona + state + durable memory),
+2. builds the system prompt (persona + state + durable memory — `trace.lex`'s
+   `remember_fact`/`remember_kv`/`recall_facts_text`/`recall_memory_json` are
+   thin wrappers over [`lex-agent/src/memory`](https://github.com/alpibrusl/lex-agent/blob/main/src/memory.lex),
+   the same shared memory primitive `lex-loom` consumes directly — importance-
+   ranked recall, scoping, expiry, and keep-history-on-overwrite all live
+   there, not in this repo),
 3. runs the lex-llm tool loop in a subprocess, with two platform tools injected
    into **every** agent — `find_peers(intent)` (registry × relationship graph)
    and `send_message(to, topic, payload)` (A2A `tasks/send`),

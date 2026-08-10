@@ -45,18 +45,29 @@ fn ddl_traces_idx() -> Str {
 # Durable per-agent memory: facts the agent should remember across conversations
 # (preferences, assignments, lessons), recalled into the system prompt each turn.
 #
-# Columns beyond the original (id, agent_id, fact, ts) implement the 2026 agent-
-# memory patterns adapted to our lightweight (no-vector-DB) case:
-#   mkey       — structured key for keyed upsert (e.g. "home_depot"); '' = keyless
+# lex-soft#136: this table's shape and the reads/writes against it now live in
+# lex-agent/src/memory (lex-agent#26/#28) — trace.lex's remember_fact/
+# remember_kv/recall_facts_text/recall_memory_json are thin wrappers over it.
+# `content`/`key`/`kind` are lex-agent's column names (this table predates
+# that module and used `fact`/`mkey` with no `kind` dimension at all — the
+# rename/backfill migration is below, in `run`). Columns beyond lex-agent's
+# own (id, agent_id, kind, key, content, ts, mtype, importance, scope,
+# superseded, expires_at) are this table's own: `updated_at` (unused by the
+# shared module; kept, not dropped, per this file's additive-only discipline)
+# and `tenant` (added by `backfill_migrations`, RLS-protected — see
+# `rls_tables()`; lex-agent's queries never `SELECT *` so this extra column
+# rides along untouched by them).
+#   kind       — fixed to 'fact' for every row this module writes (trace.lex's
+#                mem_kind()) — soft has no separate category-tag dimension
+#   key        — structured key for keyed upsert (e.g. "home_depot"); '' = keyless
 #   mtype      — semantic | episodic | procedural (memory typing)
 #   importance — high | medium | low (recall ordering, no embeddings needed)
 #   scope      — composable scope (e.g. tenant/subject); 'global' = all contexts
 #   superseded — 1 when replaced by a newer keyed value (temporal supersession:
 #                keep history for "what was true when", recall only current)
 #   expires_at — optional ISO ts; expired facts drop out of recall (staleness)
-#   updated_at — last write time
 fn ddl_agent_memory() -> Str {
-  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, fact TEXT NOT NULL, ts TEXT NOT NULL, mkey TEXT NOT NULL DEFAULT '', mtype TEXT NOT NULL DEFAULT 'semantic', importance TEXT NOT NULL DEFAULT 'medium', scope TEXT NOT NULL DEFAULT 'global', superseded BIGINT NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
+  "CREATE TABLE IF NOT EXISTS agent_memory (id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, ts TEXT NOT NULL, mtype TEXT NOT NULL DEFAULT 'semantic', importance TEXT NOT NULL DEFAULT 'medium', scope TEXT NOT NULL DEFAULT 'global', superseded BIGINT NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
 }
 
 fn ddl_agent_memory_idx() -> Str {
@@ -64,7 +75,20 @@ fn ddl_agent_memory_idx() -> Str {
 }
 
 fn ddl_agent_memory_key_idx() -> Str {
-  "CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(agent_id, scope, mkey, superseded)"
+  "CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(agent_id, scope, key, superseded)"
+}
+
+# lex-soft#136: bring a table created before the lex-agent/src/memory
+# migration up to its column names. RENAME COLUMN is identical syntax on
+# SQLite and Postgres. Tolerant/idempotent like the rest of this file — a
+# fresh install's `ddl_agent_memory` already has the new names, so every
+# statement here errors (column doesn't exist / already exists) and is
+# harmlessly swallowed; an untouched existing table gets renamed in place,
+# with its data intact (a RENAME, not a drop+recreate).
+fn rename_agent_memory_columns(db :: Db) -> [sql, fs_write] Unit {
+  let __f := exec_ddl_tolerant(db, "ALTER TABLE agent_memory RENAME COLUMN fact TO content")
+  let __k := exec_ddl_tolerant(db, "ALTER TABLE agent_memory RENAME COLUMN mkey TO key")
+  ()
 }
 
 # Control-plane identity (#59): the persistent customer principal and the agent
@@ -248,7 +272,9 @@ fn run(db :: Db) -> [sql, fs_write] Result[Unit, Str] {
                 let __m := exec_ddl_tolerant(db, "ALTER TABLE traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
                 let __mem := exec_ddl_tolerant(db, ddl_agent_memory())
                 let __memi := exec_ddl_tolerant(db, ddl_agent_memory_idx())
-                let __mc1 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mkey TEXT NOT NULL DEFAULT ''")
+                let __memren := rename_agent_memory_columns(db)
+                let __mck := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN kind TEXT NOT NULL DEFAULT 'fact'")
+                let __mc1 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN key TEXT NOT NULL DEFAULT ''")
                 let __mc2 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN mtype TEXT NOT NULL DEFAULT 'semantic'")
                 let __mc3 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium'")
                 let __mc4 := exec_ddl_tolerant(db, "ALTER TABLE agent_memory ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
