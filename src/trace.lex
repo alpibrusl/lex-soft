@@ -16,6 +16,12 @@ import "std.crypto" as crypto
 
 import "lex-schema/json_value" as jv
 
+import "lex-orm/src/connection" as conn
+
+import "lex-agent/src/memory" as mem
+
+import "./settlement" as settlement
+
 fn new_run_id() -> [random, crypto] Str {
   crypto.random_str_hex(16)
 }
@@ -84,48 +90,29 @@ fn recent_messages_json_for(db :: Db, agent_id :: Str, ctx :: Str, n :: Int) -> 
 }
 
 # ---- Durable memory --------------------------------------------------
+# Delegates to lex-agent/src/memory (lex-agent#26/#28) — the shared,
+# cross-repo memory primitive lex-loom already consumes directly, extended to
+# cover what this module needed (importance/scope/expiry/supersession). `kind`
+# is fixed to one constant for every write through this module: soft's domain
+# model has no separate category-tag dimension the way lex-agent's `kind`
+# does, so a single value here makes lex-agent's `(agent_id, kind, ...)`
+# keying reduce to exactly this module's original `(agent_id, ...)` keying —
+# schema-compatible, not just behavior-compatible.
+fn mem_kind() -> Str {
+  "fact"
+}
+
+fn conndb(db :: Db) -> [sql] conn.ConnDb {
+  { dialect: settlement.detect_dialect(db), handle: db }
+}
+
 # Store a keyless fact for an agent (deduped: same fact for the same agent is a
 # no-op). Back-compat entry point; stored as semantic/medium/global.
-fn remember_fact(db :: Db, agent_id :: Str, fact :: Str) -> [sql, fs_write, time, random, crypto] Unit {
+fn remember_fact(db :: Db, agent_id :: Str, fact :: Str) -> [sql, fs_read, fs_write, time, random, crypto] Unit {
   if str.is_empty(str.trim(fact)) {
     ()
   } else {
-    let id := new_run_id()
-    let now := time.now_str()
-    let q := "INSERT INTO agent_memory (id, agent_id, fact, ts, updated_at) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM agent_memory WHERE agent_id = ? AND fact = ? AND superseded = 0)"
-    let __lex_discard_m := sql.exec(db, q, [PStr(id), PStr(agent_id), PStr(fact), PStr(now), PStr(now), PStr(agent_id), PStr(fact)])
-    ()
-  }
-}
-
-fn norm_type(t :: Str) -> Str {
-  if t == "episodic" or t == "procedural" or t == "semantic" {
-    t
-  } else {
-    "semantic"
-  }
-}
-
-fn norm_importance(i :: Str) -> Str {
-  if i == "high" or i == "low" or i == "medium" {
-    i
-  } else {
-    "medium"
-  }
-}
-
-# Current (non-superseded) value stored under a key, or "" if none.
-fn current_value(db :: Db, agent_id :: Str, scope :: Str, mkey :: Str) -> [sql] Str {
-  let q := "SELECT fact FROM agent_memory WHERE agent_id = ? AND scope = ? AND mkey = ? AND superseded = 0 ORDER BY ts DESC LIMIT 1"
-  match sql.query(db, q, [PStr(agent_id), PStr(scope), PStr(mkey)]) {
-    Err(_) => "",
-    Ok(rows) => match list.head(rows) {
-      None => "",
-      Some(r) => match sql.get_str(r, "fact") {
-        Some(s) => s,
-        None => "",
-      },
-    },
+    mem.store_kv(conndb(db), agent_id, mem_kind(), "", fact, "semantic", "medium", "global", "")
   }
 }
 
@@ -135,69 +122,37 @@ fn current_value(db :: Db, agent_id :: Str, scope :: Str, mkey :: Str) -> [sql] 
 #   new fact -> NOOP; otherwise mark the prior value superseded (kept for history
 #   / "what was true when") and insert the new one. So evolving facts REPLACE
 #   rather than accumulate contradictions.
-fn remember_kv(db :: Db, agent_id :: Str, scope0 :: Str, mkey :: Str, fact :: Str, mtype0 :: Str, importance0 :: Str, expires_at :: Str) -> [sql, fs_write, time, random, crypto] Unit {
+fn remember_kv(db :: Db, agent_id :: Str, scope0 :: Str, mkey :: Str, fact :: Str, mtype0 :: Str, importance0 :: Str, expires_at :: Str) -> [sql, fs_read, fs_write, time, random, crypto] Unit {
   if str.is_empty(str.trim(fact)) {
     ()
   } else {
-    let scope := if str.is_empty(scope0) {
-      "global"
-    } else {
-      scope0
-    }
-    let mtype := norm_type(mtype0)
-    let importance := norm_importance(importance0)
-    if str.is_empty(str.trim(mkey)) {
-      let id := new_run_id()
-      let now := time.now_str()
-      let q := "INSERT INTO agent_memory (id, agent_id, fact, ts, mtype, importance, scope, expires_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM agent_memory WHERE agent_id = ? AND fact = ? AND superseded = 0)"
-      let __k := sql.exec(db, q, [PStr(id), PStr(agent_id), PStr(fact), PStr(now), PStr(mtype), PStr(importance), PStr(scope), PStr(expires_at), PStr(now), PStr(agent_id), PStr(fact)])
-      ()
-    } else {
-      let cur := current_value(db, agent_id, scope, mkey)
-      if cur == fact {
-        ()
-      } else {
-        let now := time.now_str()
-        let __sup := sql.exec(db, "UPDATE agent_memory SET superseded = 1, updated_at = ? WHERE agent_id = ? AND scope = ? AND mkey = ? AND superseded = 0", [PStr(now), PStr(agent_id), PStr(scope), PStr(mkey)])
-        let id := new_run_id()
-        let __ins := sql.exec(db, "INSERT INTO agent_memory (id, agent_id, fact, ts, mkey, mtype, importance, scope, superseded, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)", [PStr(id), PStr(agent_id), PStr(fact), PStr(now), PStr(mkey), PStr(mtype), PStr(importance), PStr(scope), PStr(expires_at), PStr(now)])
-        ()
-      }
-    }
+    mem.store_kv(conndb(db), agent_id, mem_kind(), mkey, fact, mtype0, importance0, scope0, expires_at)
   }
+}
+
+fn memory_line(e :: mem.MemoryEntry) -> Str {
+  let label := if str.is_empty(e.key) {
+    ""
+  } else {
+    str.concat(e.key, ": ")
+  }
+  str.concat("- ", str.concat(label, e.content))
 }
 
 # Recall an agent's live durable memory as a bulleted block, or "" if none.
 # Filters out superseded + expired rows; orders by importance (high first) then
-# recency; keyed facts render as "key: value". Single-column query (safe under
-# the sqlite multi-col bug).
-fn recall_facts_text(db :: Db, agent_id :: Str, n :: Int) -> [sql, time] Str {
-  let now := time.now_str()
-  let q := "SELECT (CASE WHEN mkey <> '' THEN mkey || ': ' ELSE '' END) || fact AS line FROM agent_memory WHERE agent_id = ? AND superseded = 0 AND (expires_at = '' OR expires_at > ?) ORDER BY CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, ts DESC LIMIT ?"
-  match sql.query(db, q, [PStr(agent_id), PStr(now), PInt(n)]) {
-    Err(_) => "",
-    Ok(rows) => str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "line") {
-        Some(s) => str.concat("- ", s),
-        None => "",
-      }
-    }), "\n"),
-  }
+# recency; keyed facts render as "key: value".
+fn recall_facts_text(db :: Db, agent_id :: Str, n :: Int) -> [sql, fs_read, time] Str {
+  str.join(list.map(mem.recall_ranked(conndb(db), agent_id, n), memory_line), "\n")
 }
 
-# Structured live memory for the GET endpoint (single-column json_object rows).
-fn recall_memory_json(db :: Db, agent_id :: Str, n :: Int) -> [sql, time] Str {
-  let now := time.now_str()
-  let q := "SELECT json_object('key', mkey, 'fact', fact, 'type', mtype, 'importance', importance, 'scope', scope, 'ts', ts, 'expires_at', expires_at) AS j FROM agent_memory WHERE agent_id = ? AND superseded = 0 AND (expires_at = '' OR expires_at > ?) ORDER BY CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, ts DESC LIMIT ?"
-  match sql.query(db, q, [PStr(agent_id), PStr(now), PInt(n)]) {
-    Err(_) => "[]",
-    Ok(rows) => str.concat("[", str.concat(str.join(list.map(rows, fn (r :: jv.Json) -> Str {
-      match sql.get_str(r, "j") {
-        Some(s) => s,
-        None => "",
-      }
-    }), ","), "]")),
-  }
+fn memory_entry_json(e :: mem.MemoryEntry) -> jv.Json {
+  JObj([("key", JStr(e.key)), ("fact", JStr(e.content)), ("type", JStr(e.mtype)), ("importance", JStr(e.importance)), ("scope", JStr(e.scope)), ("ts", JStr(e.ts)), ("expires_at", JStr(e.expires_at))])
+}
+
+# Structured live memory for the GET endpoint.
+fn recall_memory_json(db :: Db, agent_id :: Str, n :: Int) -> [sql, fs_read, time] Str {
+  jv.stringify(JList(list.map(mem.recall_ranked(conndb(db), agent_id, n), memory_entry_json)))
 }
 
 # Recent audit events for one agent, newest first, as a JSON array string.

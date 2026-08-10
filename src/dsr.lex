@@ -2,7 +2,7 @@
 #
 # lex-soft holds two free-text stores that can contain personal data, because
 # agent conversations and durable memory quote it: `traces.data_json` and
-# `agent_memory.fact` (a driver's name in a dialogue turn, a "prefers depot X"
+# `agent_memory.content` (a driver's name in a dialogue turn, a "prefers depot X"
 # fact). This exposes a data-subject request surface over exactly those, keyed by
 # `agent_id` — the platform's handle for an edge agent bound to a person / device.
 #
@@ -46,7 +46,7 @@ import "./settlement" as settlement
 
 type TraceRow = { id :: Str, run_id :: Str, agent_id :: Str, event_kind :: Str, data_json :: Str, ts :: Str }
 
-type MemRow = { id :: Str, fact :: Str, ts :: Str, mkey :: Str, mtype :: Str, importance :: Str, scope :: Str, expires_at :: Str }
+type MemRow = { id :: Str, content :: Str, ts :: Str, key :: Str, mtype :: Str, importance :: Str, scope :: Str, expires_at :: Str }
 
 # What an erasure removed, for the caller and the signed trail receipt.
 type EraseCounts = { traces :: Int, memory :: Int }
@@ -56,7 +56,7 @@ fn trace_json(r :: TraceRow) -> jv.Json {
 }
 
 fn mem_json(r :: MemRow) -> jv.Json {
-  JObj([("id", JStr(r.id)), ("fact", JStr(r.fact)), ("key", JStr(r.mkey)), ("type", JStr(r.mtype)), ("importance", JStr(r.importance)), ("scope", JStr(r.scope)), ("ts", JStr(r.ts)), ("expires_at", JStr(r.expires_at))])
+  JObj([("id", JStr(r.id)), ("fact", JStr(r.content)), ("key", JStr(r.key)), ("type", JStr(r.mtype)), ("importance", JStr(r.importance)), ("scope", JStr(r.scope)), ("ts", JStr(r.ts)), ("expires_at", JStr(r.expires_at))])
 }
 
 fn subject_traces(db :: Db, agent_id :: Str) -> [sql, fs_read] List[TraceRow] {
@@ -68,8 +68,13 @@ fn subject_traces(db :: Db, agent_id :: Str) -> [sql, fs_read] List[TraceRow] {
   }
 }
 
+# lex-soft#136: agent_memory's PII column is `content` (was `fact`) and its
+# keyed-upsert column is `key` (was `mkey`) since the migration onto
+# lex-agent/src/memory's shared schema — see migrate.lex's
+# rename_agent_memory_columns. The exported/erased JSON shape (mem_json's
+# "fact"/"key" field names) is unchanged; only the underlying columns moved.
 fn subject_memory(db :: Db, agent_id :: Str) -> [sql, fs_read] List[MemRow] {
-  let q := "SELECT id, fact, ts, mkey, mtype, importance, scope, expires_at FROM agent_memory WHERE agent_id=? ORDER BY ts"
+  let q := "SELECT id, content, ts, key, mtype, importance, scope, expires_at FROM agent_memory WHERE agent_id=? ORDER BY ts"
   let rows :: Result[List[MemRow], SqlError] := sql.query(db, q, [PStr(agent_id)])
   match rows {
     Err(_) => [],
