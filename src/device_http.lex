@@ -65,7 +65,7 @@ fn deny(admin_key :: Str) -> resp.Response {
   }
 }
 
-fn handle_register(c :: ctx.Ctx, db :: Db, sign_seed :: Bytes, admin_key :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+fn handle_register(c :: ctx.Ctx, db :: Db, sign_seed :: Bytes, admin_key :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
   if not authed(admin_key, c) {
     deny(admin_key)
   } else {
@@ -100,7 +100,7 @@ fn device_to_json(r :: DeviceRow) -> jv.Json {
   JObj([("device_id", JStr(r.device_id)), ("tenant", JStr(r.tenant)), ("kind", JStr(r.kind)), ("public_key", JStr(r.public_key)), ("issued_at_ms", JInt(r.issued_at_ms)), ("expires_at_ms", JInt(r.expires_at_ms))])
 }
 
-fn handle_list(c :: ctx.Ctx, db :: Db, admin_key :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+fn handle_list(c :: ctx.Ctx, db :: Db, admin_key :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
   if not authed(admin_key, c) {
     deny(admin_key)
   } else {
@@ -116,10 +116,10 @@ fn handle_list(c :: ctx.Ctx, db :: Db, admin_key :: Str) -> [io, time, crypto, r
 # Host opt-in, mirroring dsr.mount. `admin_key` gates registration (empty ⇒
 # disabled); `sign_seed` is the deployment ed25519 identity that signs certs.
 fn mount(r :: router.Router, db :: Db, sign_seed :: Bytes, admin_key :: Str) -> router.Router {
-  let r_reg := router.route_effectful(r, "POST", "/devices/register", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_reg := router.route_effectful(r, "POST", "/devices/register", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_register(c, db, sign_seed, admin_key)
   })
-  router.route_effectful(r_reg, "GET", "/devices", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r_reg, "GET", "/devices", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_list(c, db, admin_key)
   })
 }

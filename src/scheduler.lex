@@ -158,7 +158,7 @@ fn jstr(j :: jv.Json, key :: Str) -> Str {
 # POST /schedules {agent_id, inbox_url?, prompt?, interval_seconds}
 # GET  /schedules
 fn mount(r :: router.Router, db :: Db) -> router.Router {
-  let with_post := router.route_effectful(r, "POST", "/schedules", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_post := router.route_effectful(r, "POST", "/schedules", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -187,7 +187,7 @@ fn mount(r :: router.Router, db :: Db) -> router.Router {
       },
     }
   })
-  router.route_effectful(with_post, "GET", "/schedules", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_post, "GET", "/schedules", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     resp.json(jv.stringify(JObj([("schedules", JList(list.map(list_all(db), fn (s :: Schedule) -> jv.Json {
       schedule_json(s)
     })))])))

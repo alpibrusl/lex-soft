@@ -88,7 +88,7 @@ fn health_json(db :: Db, org :: Str, version :: Str) -> [sql, fs_read] Str {
 # key means the operator endpoint is DISABLED (fail closed) — a deployment must
 # set one deliberately to expose the aggregate.
 fn mount(r :: router.Router, db :: Db, org :: Str, version :: Str, admin_key :: Str) -> router.Router {
-  router.route_effectful(r, "GET", "/admin/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "GET", "/admin/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if str.is_empty(admin_key) {
       resp.not_found()
     } else {

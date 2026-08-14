@@ -83,7 +83,7 @@ fn find_peers_tool() -> t.Tool {
 fn tool_panic() -> t.Tool {
   { name: "", description: "", params: { title: "", description: "", fields: [] }, execute: fn (_a :: jv.Json) -> [net, io, proc] Result[jv.Json, e.Errors] {
     Ok(JNull)
-  }, precondition: None }
+  }, precondition: None, approval_scope: None }
 }
 
 fn ids_in(j :: jv.Json) -> List[Str] {

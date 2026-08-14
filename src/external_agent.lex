@@ -149,8 +149,8 @@ fn reply_text(result :: jv.Json) -> Str {
 # The proxy-record handler. Records the inbound turn, forwards it to the
 # external inbox, records the interaction to the trail, and returns the external
 # agent's reply plus a `trail_id` artifact (so the node-side recorder skips it).
-fn make_handler(db :: Db, ec :: ExternalConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn make_handler(db :: Db, ec :: ExternalConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
+  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
     let run_id := if str.is_empty(m.context_id) {
       trace.new_run_id()
     } else {

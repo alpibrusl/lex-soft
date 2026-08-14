@@ -172,7 +172,7 @@ fn ping_capability() -> cap.Capability {
   cap.inbound("handle", "Reply pong.", { title: "Ping", description: "ping", fields: [sch.required_str("text", [])] })
 }
 
-fn ping_handler(_m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn ping_handler(_m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
   { next_state: tk.TSCompleted, reply: Some(msg.agent_text("pong")), artifacts: [] }
 }
 
@@ -185,13 +185,13 @@ fn demo_cfg() -> fed.FederationConfig {
   { base: "http://localhost", org: "acme", secret: bytes.from_str("s"), prev_secrets: [], ttl: 3600, sign_seed: crypto.sha256(bytes.from_str("d")), pub_b64: "", require_token: false, signup_token: "", hs256_dispatch: true }
 }
 
-fn call_as(r :: router.Router, from_agent :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+fn call_as(r :: router.Router, from_agent :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Int {
   let req := { body: "{}", method: "POST", path: "/agents/depot-1/", query: "", headers: map.from_list([("x-from-agent", from_agent), ("x-capability", "logistics.depot.handle")]) }
   let res := router.dispatch(r, req)
   res.status
 }
 
-fn http_gate_revokes_access() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn http_gate_revokes_access() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -225,7 +225,7 @@ fn http_gate_revokes_access() -> [io, time, crypto, random, sql, fs_read, fs_wri
 # credential that just belongs to the wrong org. Exercises the /activity route
 # specifically because, before this fix, it had no auth check whatsoever —
 # only the RPC dispatch route did, and even that one never checked ownership.
-fn call_activity_with_token(r :: router.Router, agent_id :: Str, token :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+fn call_activity_with_token(r :: router.Router, agent_id :: Str, token :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Int {
   let headers := if str.is_empty(token) {
     map.from_list([])
   } else {
@@ -236,7 +236,7 @@ fn call_activity_with_token(r :: router.Router, agent_id :: Str, token :: Str) -
   res.status
 }
 
-fn cross_tenant_agent_access_is_denied() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn cross_tenant_agent_access_is_denied() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -338,7 +338,7 @@ fn get_req(path :: Str, query :: Str) -> ctx.RawRequest {
   { body: "", method: "GET", path: path, query: query, headers: map.from_list([]) }
 }
 
-fn tenant_scoped_discovery() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn tenant_scoped_discovery() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -404,7 +404,7 @@ fn bstr(b :: Bool) -> Str {
   }
 }
 
-fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Unit {
   let results := [tenant_isolation(), default_tenant_backcompat(), relationship_grant_and_revoke(), capability_scoped_contract(), http_gate_revokes_access(), cross_tenant_agent_access_is_denied(), caps_union_dedup(), published_catalog_is_discoverable(), tenant_scoped_discovery(), cross_tenant_id_claim_is_refused()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

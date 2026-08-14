@@ -83,7 +83,7 @@ fn parse_intent_map(j :: jv.Json) -> List[resolver.IntentRoles] {
 # run the loop, and print the {text, tools} result. `tool_factory` receives the
 # parsed request JSON so the app can pull whatever it needs (kind, agent_id,
 # service URLs) to construct its domain tools.
-fn run(tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, env, fs_read, proc] Unit {
+fn run(tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, env, fs_read, proc, approval] Unit {
   let req_file := match env.get("LLM_REQ_FILE") {
     None => "/tmp/llm_req.json",
     Some(f) => f,
@@ -108,7 +108,7 @@ fn get_str(j :: jv.Json, key :: Str, default :: Str) -> Str {
   }
 }
 
-fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, env, proc] Str {
+fn run_json(j :: jv.Json, tool_factory :: (jv.Json) -> List[t.Tool]) -> [net, llm, io, env, proc, approval] Str {
   let provider_name := get_str(j, "provider", "vertex")
   let api_url := get_str(j, "api_url", "")
   let api_key := get_str(j, "api_key", "")

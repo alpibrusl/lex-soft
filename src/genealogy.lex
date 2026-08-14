@@ -208,7 +208,7 @@ fn trace_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_re
 # Host opt-in: mount the trace route. `secrets` is the same federation keyring
 # /audit and /ledger are mounted with (identity.resolve_subject).
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
-  router.route_effectful(r, "GET", "/trace/unit/:ref", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "GET", "/trace/unit/:ref", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     trace_response(db, secrets, c)
   })
 }

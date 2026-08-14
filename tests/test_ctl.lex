@@ -379,7 +379,7 @@ fn judge_and_record_is_not_double_fired() -> [net, io, sql, fs_write, time] Resu
   }
 }
 
-fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -456,7 +456,7 @@ fn list_and_pending_count_are_tenant_scoped() -> [net, io, sql, fs_write, time] 
 # 400 rather than silently defaulting via cmp_of_str/on_falsify_of_str
 # (#115) — a safety-relevant predicate direction shouldn't flip on a
 # typo.
-fn http_rejects_invalid_predicate_fields() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn http_rejects_invalid_predicate_fields() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -482,7 +482,7 @@ fn http_rejects_invalid_predicate_fields() -> [io, time, crypto, random, sql, fs
 
 # GET /ctl/contracts (#115): tenant-scoped list, narrowed by the
 # optional ?disposition= filter, plus the pending_count health number.
-fn http_list_route_is_tenant_scoped() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn http_list_route_is_tenant_scoped() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -541,7 +541,7 @@ fn int_to_str_local(n :: Int) -> Str {
   jv.stringify(JInt(n))
 }
 
-fn run_all() -> [net, io, time, crypto, random, sql, fs_read, fs_write, concurrent, llm, proc] Unit {
+fn run_all() -> [net, io, time, crypto, random, sql, fs_read, fs_write, concurrent, llm, proc, approval] Unit {
   let results := [propose_and_get_roundtrip(), propose_is_idempotent(), propose_distinct_content_yields_distinct_id(), tenant_isolation_on_shared_id(), pending_due_respects_deadline(), pending_due_is_tenant_isolated(), judge_and_record_materialises_and_notifies(), judge_and_record_falsifies(), judge_and_record_ambiguous_when_concurrent(), judge_and_record_skips_not_yet_due(), judge_and_record_is_not_double_fired(), http_surface_roundtrip(), list_and_pending_count_are_tenant_scoped(), http_rejects_invalid_predicate_fields(), http_list_route_is_tenant_scoped()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

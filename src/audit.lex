@@ -378,13 +378,13 @@ fn export_response(db :: Db, secrets :: List[Bytes], sign_seed :: Bytes, pub_b64
 }
 
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
-  let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_ev := router.route_effectful(r, "GET", "/audit/events", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     events_response(db, secrets, c)
   })
-  let r_int := router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_int := router.route_effectful(r_ev, "GET", "/audit/interactions", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     interactions_response(db, secrets, c)
   })
-  router.route_effectful(r_int, "GET", "/audit/summary", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r_int, "GET", "/audit/summary", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     summary_response(db, secrets, c)
   })
 }
@@ -392,7 +392,7 @@ fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router 
 # Host opt-in for the signed archive (#48): needs the deployment signing seed
 # and its published key, which plain mount() deliberately doesn't take.
 fn mount_export(r :: router.Router, db :: Db, secrets :: List[Bytes], sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
-  router.route_effectful(r, "POST", "/audit/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "POST", "/audit/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     export_response(db, secrets, sign_seed, pub_b64, c)
   })
 }

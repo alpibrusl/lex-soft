@@ -339,43 +339,43 @@ fn handle_dashboard(_c :: ctx.Ctx) -> resp.Response {
 fn build_router(db :: Db, audit_key :: Str, intent_map :: List[res.IntentRoles]) -> router.Router {
   let r0 := router.new()
   let rdash := router.route(r0, "GET", "/", handle_dashboard)
-  let r1 := router.route_effectful(rdash, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r1 := router.route_effectful(rdash, "GET", "/v1/agents/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_lookup(db, c)
   })
-  let r2 := router.route_effectful(r1, "GET", "/v1/state/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r2 := router.route_effectful(r1, "GET", "/v1/state/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_state_load(db, c)
   })
-  let r3 := router.route_effectful(r2, "POST", "/v1/agents", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r3 := router.route_effectful(r2, "POST", "/v1/agents", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_register(db, c)
   })
-  let r4 := router.route_effectful(r3, "GET", "/v1/agents/:id/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r4 := router.route_effectful(r3, "GET", "/v1/agents/:id/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_peers(db, c, intent_map)
   })
-  let r5 := router.route_effectful(r4, "POST", "/v1/agents/:id/heartbeat", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r5 := router.route_effectful(r4, "POST", "/v1/agents/:id/heartbeat", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_heartbeat(db, c)
   })
-  let r6 := router.route_effectful(r5, "POST", "/v1/state/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r6 := router.route_effectful(r5, "POST", "/v1/state/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_state_save(db, c)
   })
-  let r7 := router.route_effectful(r6, "POST", "/v1/messages", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r7 := router.route_effectful(r6, "POST", "/v1/messages", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_send(db, c)
   })
-  let r8 := router.route_effectful(r7, "GET", "/v1/messages/:id/pull", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r8 := router.route_effectful(r7, "GET", "/v1/messages/:id/pull", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_pull(db, c)
   })
-  let r9 := router.route_effectful(r8, "GET", "/v1/audit", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r9 := router.route_effectful(r8, "GET", "/v1/audit", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_audit(db, audit_key, c)
   })
-  let r10 := router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r10 := router.route_effectful(r9, "GET", "/v1/health", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_health(db, c)
   })
-  router.route_effectful(r10, "GET", "/v1/agents", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r10, "GET", "/v1/agents", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     handle_list_agents(db, c)
   })
 }
 
 # ---- Entry point ------------------------------------------------
-fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto] Unit {
+fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto, approval] Unit {
   let port := match str.to_int(match env.get("PORT") {
     Some(p) => p,
     None => "9000",
@@ -407,7 +407,7 @@ fn main() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, ll
         let __p4 := io.print("  migrations ok")
         let r := build_router(db, audit_key, [])
         let __p5 := io.print("  ready")
-        let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
+        let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto, approval] Response {
           let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
           let result := router.dispatch(r, raw)
           { status: result.status, body: BodyStr(result.body), headers: result.headers }

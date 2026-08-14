@@ -51,7 +51,7 @@ fn platform_introspect(name :: Str, version :: Str, description :: Str) -> jv.Js
 
 # Run `agent_def` as an MCP stdio server. Blocks until stdin closes.
 # Call this from a dedicated mcp_main.lex; do not mix with net.serve_fn.
-fn run_mcp(agent_def :: srv.AgentDef) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Nil {
+fn run_mcp(agent_def :: srv.AgentDef) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Nil {
   mcp_server.run(agent_def)
 }
 

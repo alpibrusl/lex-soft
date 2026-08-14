@@ -259,13 +259,13 @@ fn invoices_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs
 # Host opt-in: mount the tenant-scoped ledger routes. `secrets` is the same
 # federation keyring /audit is mounted with (identity.resolve_subject).
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
-  let r_ent := router.route_effectful(r, "GET", "/ledger/entries", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_ent := router.route_effectful(r, "GET", "/ledger/entries", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     entries_response(db, secrets, c)
   })
-  let r_sum := router.route_effectful(r_ent, "GET", "/ledger/summary", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_sum := router.route_effectful(r_ent, "GET", "/ledger/summary", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     summary_response(db, secrets, c)
   })
-  router.route_effectful(r_sum, "GET", "/ledger/invoices", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r_sum, "GET", "/ledger/invoices", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     invoices_response(db, secrets, c)
   })
 }

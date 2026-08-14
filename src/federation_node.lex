@@ -76,7 +76,7 @@ fn build_cfg(port :: Int) -> [env, crypto] fed.FederationConfig {
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-fn serve_federation() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto] Unit {
+fn serve_federation() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto, approval] Unit {
   let port := env_int_or("PORT", 9100)
   let db_url := env_or("DB_URL", "federation.db")
   let cfg := build_cfg(port)
@@ -93,7 +93,7 @@ fn serve_federation() -> [net, io, env, time, random, sql, fs_read, fs_write, co
         let __p6 := io.print("  migrations ok")
         let r := fed.mount_federation(router.new(), db, db, cfg)
         let __p7 := io.print("  ready")
-        let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto] Response {
+        let handler := fn (req :: Request) -> [io, time, sql, concurrent, net, random, fs_read, fs_write, llm, proc, crypto, approval] Response {
           let raw := { body: req.body, method: req.method, path: req.path, query: req.query, headers: req.headers }
           let result := router.dispatch(r, raw)
           { status: result.status, body: BodyStr(result.body), headers: result.headers }
