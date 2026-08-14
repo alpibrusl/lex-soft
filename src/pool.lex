@@ -74,7 +74,7 @@ fn claim_response(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_re
 }
 
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
-  router.route_effectful(r, "POST", "/pool/claim", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "POST", "/pool/claim", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     claim_response(db, secrets, c)
   })
 }

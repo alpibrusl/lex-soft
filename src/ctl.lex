@@ -391,7 +391,7 @@ fn effect_row_json(r :: EffectRow) -> jv.Json {
 # body or query string, where a caller could claim any tenant it likes
 # regardless of who it actually authenticated as.
 fn mount_ctl(r :: router.Router, db :: Db) -> router.Router {
-  let with_post := router.route_effectful(r, "POST", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_post := router.route_effectful(r, "POST", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -423,7 +423,7 @@ fn mount_ctl(r :: router.Router, db :: Db) -> router.Router {
       },
     }
   })
-  let with_get_one := router.route_effectful(with_post, "GET", "/ctl/contracts/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_get_one := router.route_effectful(with_post, "GET", "/ctl/contracts/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match ctx.path_param(c, "id") {
       None => resp.not_found(),
       Some(id) => match get_by_id(db, ctx.header_or(c, "X-Tenant-Id", "default"), id) {
@@ -432,7 +432,7 @@ fn mount_ctl(r :: router.Router, db :: Db) -> router.Router {
       },
     }
   })
-  router.route_effectful(with_get_one, "GET", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_get_one, "GET", "/ctl/contracts", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let tenant := ctx.header_or(c, "X-Tenant-Id", "default")
     let rows := list_effects(db, tenant, ctx.query_param_or(c, "disposition", ""))
     match pending_count(db, tenant) {

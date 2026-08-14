@@ -45,7 +45,7 @@ type Backend = runner.Backend
 
 # Entry point — start the coordination API HTTP server.
 # Reads PORT (default 9000) and DB_PATH from environment.
-fn start_platform() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto] Unit {
+fn start_platform() -> [net, io, env, time, random, sql, fs_read, fs_write, concurrent, llm, proc, crypto, approval] Unit {
   platform_server.main()
 }
 

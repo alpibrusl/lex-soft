@@ -65,7 +65,7 @@ fn jstr(j :: jv.Json, key :: Str) -> Str {
 }
 
 # 1 + 6. request → pending → decide(approve): signed, verifiable, trailed.
-fn approve_flow_signs_and_verifies() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn approve_flow_signs_and_verifies() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -105,7 +105,7 @@ fn approve_flow_signs_and_verifies() -> [io, time, crypto, random, sql, fs_read,
 }
 
 # 2. Decisions are final.
-fn decision_is_final() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn decision_is_final() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -130,7 +130,7 @@ fn decision_is_final() -> [io, time, crypto, random, sql, fs_read, fs_write, net
 }
 
 # 3. The gateway answers approval.request over A2A with a pending approval_id.
-fn gateway_handler_replies_with_approval_id() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn gateway_handler_replies_with_approval_id() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -176,7 +176,7 @@ fn gateway_handler_replies_with_approval_id() -> [io, time, crypto, random, sql,
 }
 
 # 4. Scheduler due-windows + registry inbox fallback.
-fn scheduler_due_and_rearm() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn scheduler_due_and_rearm() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -212,7 +212,7 @@ fn scheduler_due_and_rearm() -> [io, time, crypto, random, sql, fs_read, fs_writ
 }
 
 # 5. The HTTP surface end-to-end via dispatch.
-fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -248,7 +248,7 @@ fn http_surface_roundtrip() -> [io, time, crypto, random, sql, fs_read, fs_write
   }
 }
 
-fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Unit {
   let results := [approve_flow_signs_and_verifies(), decision_is_final(), gateway_handler_replies_with_approval_id(), scheduler_due_and_rearm(), http_surface_roundtrip()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

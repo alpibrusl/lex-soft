@@ -56,13 +56,13 @@ fn connect_req(org :: Str) -> jv.Json {
   JObj([("org", JStr(org)), ("scope", JStr("logistics")), ("agents", JList([]))])
 }
 
-fn post_connect(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+fn post_connect(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Int {
   let req := { body: jv.stringify(connect_req(org)), method: "POST", path: "/connections", query: "", headers: map.new() }
   let res := router.dispatch(r, req)
   res.status
 }
 
-fn token_of(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Str {
+fn token_of(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Str {
   let req := { body: jv.stringify(connect_req(org)), method: "POST", path: "/connections", query: "", headers: map.new() }
   let res := router.dispatch(r, req)
   match jv.parse(res.body) {
@@ -76,7 +76,7 @@ fn token_of(r :: router.Router, org :: Str) -> [io, time, crypto, random, sql, f
 
 # Onboarding an org mints a token that resolves to a real, audit-scoped
 # account/subject — not just a bare unrecorded JWT.
-fn onboarded_token_is_audit_resolvable() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarded_token_is_audit_resolvable() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -104,14 +104,14 @@ fn onboarded_token_is_audit_resolvable() -> [io, time, crypto, random, sql, fs_r
 # Flooding POST /connections for the SAME org trips the rate limit (429) well
 # before an unbounded number of tokens could be minted; a DIFFERENT org is
 # unaffected (the limit is per-org, not global).
-fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := demo_cfg()
       let r := fed.mount_federation(router.new(), db, db, cfg)
-      let statuses := list.map(list.range(0, 25), fn (_n :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+      let statuses := list.map(list.range(0, 25), fn (_n :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Int {
         post_connect(r, "flooder-org")
       })
       let saw_429 := list.fold(statuses, false, fn (acc :: Bool, s :: Int) -> Bool {
@@ -135,7 +135,7 @@ fn flood_is_rate_limited_per_org() -> [io, time, crypto, random, sql, fs_read, f
 # its plan back to "free" (identity.create_account's upsert always overwrites
 # `plan`, so onboard_connection must only create-with-"free" for a brand-new
 # account, never for one that already exists).
-fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -165,7 +165,7 @@ fn reonboarding_preserves_an_upgraded_plan() -> [io, time, crypto, random, sql, 
 # An agent onboarded via POST /connections must land in ITS ORG's tenant (not
 # the "default" tenant), so per-org discovery / audit / usage include it. This
 # is the fix for the scoping gap: register_peer_json now uses register_in(org).
-fn onboarded_agent_lands_in_its_org_tenant() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarded_agent_lands_in_its_org_tenant() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -203,7 +203,7 @@ fn bool_s(b :: Bool) -> Str {
 # the-key matters — proceeding would leave the caller believing its key is
 # bound, and every partner token it later signed would be rejected with no clue
 # why.
-fn an_unproved_key_refuses_the_whole_request() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn an_unproved_key_refuses_the_whole_request() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -230,7 +230,7 @@ fn an_unproved_key_refuses_the_whole_request() -> [io, time, crypto, random, sql
 }
 
 # The honest path still works over HTTP: take a challenge, sign it, onboard.
-fn a_proved_key_onboards() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn a_proved_key_onboards() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -268,7 +268,7 @@ fn a_proved_key_onboards() -> [io, time, crypto, random, sql, fs_read, fs_write,
   }
 }
 
-fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc, approval] Unit {
   let results := [an_unproved_key_refuses_the_whole_request(), a_proved_key_onboards(), onboarded_token_is_audit_resolvable(), flood_is_rate_limited_per_org(), reonboarding_preserves_an_upgraded_plan(), onboarded_agent_lands_in_its_org_tenant()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

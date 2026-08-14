@@ -201,10 +201,10 @@ fn erase_response(db :: Db, dsr_key :: Str, sign_seed :: Bytes, pub_b64 :: Str, 
 # are the deployment ed25519 identity (same pair the audit export + human gateway
 # sign with) so exports and erasure receipts are independently verifiable.
 fn mount(r :: router.Router, db :: Db, dsr_key :: Str, sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
-  let r_ex := router.route_effectful(r, "POST", "/dsr/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let r_ex := router.route_effectful(r, "POST", "/dsr/export", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     export_response(db, dsr_key, sign_seed, pub_b64, c)
   })
-  router.route_effectful(r_ex, "POST", "/dsr/erase", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r_ex, "POST", "/dsr/erase", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     erase_response(db, dsr_key, sign_seed, pub_b64, c)
   })
 }

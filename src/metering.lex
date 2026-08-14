@@ -282,7 +282,7 @@ fn usage_response(db :: Db, secrets :: List[Bytes], catalog :: List[PlanPrice], 
 # credentials are issued under (identity.resolve_subject). `catalog` carries
 # the host's commercial terms per plan — pass [] for counters-only.
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes], catalog :: List[PlanPrice]) -> router.Router {
-  router.route_effectful(r, "GET", "/usage", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "GET", "/usage", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     usage_response(db, secrets, catalog, c)
   })
 }

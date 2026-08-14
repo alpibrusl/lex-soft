@@ -210,7 +210,7 @@ fn profile_json(db :: Db, log :: tlog.Log, cp :: Str) -> [sql, fs_read, time] St
 
 # Mount GET /counterparties/:org — the agent-facing ARM query.
 fn mount(r :: router.Router, db :: Db) -> router.Router {
-  router.route_effectful(r, "GET", "/counterparties/:org", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "GET", "/counterparties/:org", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let org := match ctx.path_param(c, "org") {
       Some(s) => s,
       None => "",

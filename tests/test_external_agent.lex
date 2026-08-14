@@ -76,7 +76,7 @@ fn outcome_trail_id(o :: srv.HandlerOutcome) -> Str {
 
 # Invoking the adapter records a verifiable trail + returns a trail_id artifact,
 # even with the external inbox down.
-fn records_even_when_unreachable() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn records_even_when_unreachable() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -96,7 +96,7 @@ fn records_even_when_unreachable() -> [io, time, crypto, random, sql, fs_read, f
   }
 }
 
-fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Unit {
   let results := [reply_text_extracts(), agent_def_shape(), records_even_when_unreachable()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

@@ -44,7 +44,7 @@ fn jfield(j :: jv.Json, k :: Str) -> Str {
   }
 }
 
-fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Result[Unit, Str] {
+fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -107,7 +107,7 @@ fn export_verifies_against_published_key() -> [io, sql, fs_read, fs_write, time,
 # a pass here cannot be an artefact of a globally broken query. Org B's event id
 # must appear in NEITHER the events page NOR the signed export archive, and the
 # ?agent= override must not let A name B's agent.
-fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Result[Unit, Str] {
+fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -167,7 +167,7 @@ fn cross_tenant_read_is_refused() -> [io, sql, fs_read, fs_write, time, crypto, 
 # and never mention B's event id — a leak would read 9. Same boundary as
 # /audit/events, asserted independently because a GROUP BY is an easy place to
 # forget the WHERE.
-fn summary_is_tenant_scoped() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Result[Unit, Str] {
+fn summary_is_tenant_scoped() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -210,7 +210,7 @@ fn summary_is_tenant_scoped() -> [io, sql, fs_read, fs_write, time, crypto, rand
   }
 }
 
-fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, sql, fs_read, fs_write, time, crypto, random, net, concurrent, llm, proc, approval] Unit {
   let results := [export_verifies_against_published_key(), cross_tenant_read_is_refused(), summary_is_tenant_scoped()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {

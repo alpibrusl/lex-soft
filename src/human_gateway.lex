@@ -206,8 +206,8 @@ fn jstr(j :: jv.Json, key :: Str) -> Str {
   }
 }
 
-fn make_handler(db :: Db) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn make_handler(db :: Db) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
+  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
     let body := match jv.parse(first_text(m)) {
       Ok(j) => j,
       Err(_) => JObj([]),
@@ -240,12 +240,12 @@ fn make_agent_def(db :: Db, id :: Str, base_url :: Str) -> srv.AgentDef {
 # GET  /approvals/:id        — one approval, incl. decision + signature
 # POST /approvals/:id/decide — the human decision: {"approve": bool, "by": str}
 fn mount(r :: router.Router, db :: Db, sign_seed :: Bytes, pub_b64 :: Str) -> router.Router {
-  let with_list := router.route_effectful(r, "GET", "/approvals", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_list := router.route_effectful(r, "GET", "/approvals", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     resp.json(jv.stringify(JObj([("approvals", JList(list.map(pending(db), fn (a :: Approval) -> jv.Json {
       approval_json(a)
     })))])))
   })
-  let with_get := router.route_effectful(with_list, "GET", "/approvals/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_get := router.route_effectful(with_list, "GET", "/approvals/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let id := match ctx.path_param(c, "id") {
       Some(s) => s,
       None => "",
@@ -255,7 +255,7 @@ fn mount(r :: router.Router, db :: Db, sign_seed :: Bytes, pub_b64 :: Str) -> ro
       Some(a) => resp.json(jv.stringify(approval_json(a))),
     }
   })
-  router.route_effectful(with_get, "POST", "/approvals/:id/decide", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_get, "POST", "/approvals/:id/decide", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let id := match ctx.path_param(c, "id") {
       Some(s) => s,
       None => "",

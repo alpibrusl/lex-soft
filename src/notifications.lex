@@ -248,7 +248,7 @@ fn subject_of(db :: Db, secrets :: List[Bytes], c :: ctx.Ctx) -> [sql, fs_read, 
 }
 
 fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router {
-  let with_list := router.route_effectful(r, "GET", "/channels", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_list := router.route_effectful(r, "GET", "/channels", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match subject_of(db, secrets, c) {
       None => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Some(subj) => resp.json(jv.stringify(JObj([("account", JStr(subj.account)), ("channels", JList(list.map(list_channels(db, subj.account), fn (ch :: Channel) -> jv.Json {
@@ -256,7 +256,7 @@ fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router 
       })))]))),
     }
   })
-  let with_post := router.route_effectful(with_list, "POST", "/channels", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_post := router.route_effectful(with_list, "POST", "/channels", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match subject_of(db, secrets, c) {
       None => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Some(subj) => match jv.parse(c.body) {
@@ -280,7 +280,7 @@ fn mount(r :: router.Router, db :: Db, secrets :: List[Bytes]) -> router.Router 
       },
     }
   })
-  router.route_effectful(with_post, "GET", "/notifications", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_post, "GET", "/notifications", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match subject_of(db, secrets, c) {
       None => resp.unauthorized("{\"error\":\"unrecognised credential\"}"),
       Some(subj) => resp.json(jv.stringify(JObj([("account", JStr(subj.account)), ("notifications", JList(list.map(list_notifications(db, subj.account), fn (n :: Notification) -> jv.Json {

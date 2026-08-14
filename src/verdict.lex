@@ -222,7 +222,7 @@ fn no_spec_verdict(base :: Verdict, cid :: Str) -> Verdict {
 # silent integrity-only pass. `capability_id` is required unless the caller
 # explicitly asks for integrity-only with `{"mode":"integrity_only"}`.
 fn mount_verify(r :: router.Router, db :: Db, specs :: List[CapSpec]) -> router.Router {
-  router.route_effectful(r, "POST", "/verify", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(r, "POST", "/verify", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {

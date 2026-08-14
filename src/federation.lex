@@ -444,7 +444,7 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
   let with_card := router.route(r, "GET", card_path, fn (_c :: ctx.Ctx) -> resp.Response {
     { status: 200, body: card_body, headers: map.from_list([("content-type", "application/json")]) }
   })
-  let with_rpc := router.route_effectful(with_card, "POST", rpc_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_rpc := router.route_effectful(with_card, "POST", rpc_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if str.is_empty(c.body) {
       resp.bad_request("{\"error\":\"empty body\"}")
     } else {
@@ -473,14 +473,14 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       }
     }
   })
-  let with_activity := router.route_effectful(with_rpc, "GET", activity_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_activity := router.route_effectful(with_rpc, "GET", activity_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if caller_authorized(db, c, agent_id, cfg) {
       resp.json(trace.recent_by_agent(db, agent_id, 60))
     } else {
       unauthorized_response()
     }
   })
-  let with_remember := router.route_effectful(with_activity, "POST", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_remember := router.route_effectful(with_activity, "POST", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if caller_authorized(db, c, agent_id, cfg) {
       let bodyj := match jv.parse(c.body) {
         Ok(j) => j,
@@ -503,7 +503,7 @@ fn mount_agent(r :: router.Router, db :: Db, agent_def :: srv.AgentDef, agent_id
       unauthorized_response()
     }
   })
-  router.route_effectful(with_remember, "GET", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_remember, "GET", remember_path, fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     if caller_authorized(db, c, agent_id, cfg) {
       resp.json(str.concat("{\"agent\":\"", str.concat(agent_id, str.concat("\",\"memory\":", str.concat(trace.recall_memory_json(db, agent_id, 50), "}")))))
     } else {
@@ -652,7 +652,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
   let with_key := router.route(r, "GET", "/.well-known/agent-key.json", fn (_c :: ctx.Ctx) -> resp.Response {
     { status: 200, body: jv.stringify(JObj([("org", JStr(org)), ("alg", JStr("ed25519")), ("public_key", JStr(cfg.pub_b64))])), headers: map.from_list([("content-type", "application/json")]) }
   })
-  let with_identity := router.route_effectful(with_key, "GET", "/.well-known/agent-identity.json", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_identity := router.route_effectful(with_key, "GET", "/.well-known/agent-identity.json", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let payload := str.join([org, "|", base, "|", cfg.pub_b64], "")
     let sig := match ed.sign_text(cfg.sign_seed, payload) {
       Ok(s) => s,
@@ -660,13 +660,13 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
     }
     resp.json(jv.stringify(JObj([("org", JStr(org)), ("base_url", JStr(base)), ("alg", JStr("ed25519")), ("public_key", JStr(cfg.pub_b64)), ("payload", JStr(payload)), ("signature", JStr(sig))])))
   })
-  let with_catalog := router.route_effectful(with_identity, "GET", "/.well-known/agents.json", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_catalog := router.route_effectful(with_identity, "GET", "/.well-known/agents.json", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     resp.json(catalog_for(db, base, ctx.query_param_or(c, "tenant", "")))
   })
-  let with_list := router.route_effectful(with_catalog, "GET", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_list := router.route_effectful(with_catalog, "GET", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     resp.json(catalog_for(db, base, ctx.query_param_or(c, "tenant", "")))
   })
-  let with_peers := router.route_effectful(with_list, "POST", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_peers := router.route_effectful(with_list, "POST", "/peers", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -692,7 +692,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  let with_conn := router.route_effectful(with_peers, "POST", "/connections", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_conn := router.route_effectful(with_peers, "POST", "/connections", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -709,7 +709,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  let with_chal := router.route_effectful(with_conn, "POST", "/connections/challenge", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_chal := router.route_effectful(with_conn, "POST", "/connections/challenge", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -729,7 +729,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  let with_dir_post := router.route_effectful(with_chal, "POST", "/directory", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_post := router.route_effectful(with_chal, "POST", "/directory", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -756,7 +756,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  let with_dir_publish := router.route_effectful(with_dir_post, "POST", "/directory/publish", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_publish := router.route_effectful(with_dir_post, "POST", "/directory/publish", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -782,10 +782,10 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  let with_dir_list := router.route_effectful(with_dir_publish, "GET", "/directory", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_list := router.route_effectful(with_dir_publish, "GET", "/directory", fn (_c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     resp.json(dir_list_json(dir_query(db, "")))
   })
-  let with_dir_find := router.route_effectful(with_dir_list, "GET", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_dir_find := router.route_effectful(with_dir_list, "GET", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let cap := ctx.query_param_or(c, "capability", "")
     let rows := dir_query(db, "")
     let matched_rows := if str.is_empty(cap) {
@@ -802,7 +802,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       dir_to_json(rr)
     })))])))
   })
-  let with_find_post := router.route_effectful(with_dir_find, "POST", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  let with_find_post := router.route_effectful(with_dir_find, "POST", "/directory/find", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     match jv.parse(c.body) {
       Err(_) => resp.bad_request("{\"error\":\"invalid json\"}"),
       Ok(j) => {
@@ -819,7 +819,7 @@ fn mount_federation(r :: router.Router, db :: Db, mdb :: Db, cfg :: FederationCo
       },
     }
   })
-  router.route_effectful(with_find_post, "GET", "/trails/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] resp.Response {
+  router.route_effectful(with_find_post, "GET", "/trails/:id", fn (c :: ctx.Ctx) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] resp.Response {
     let id := match ctx.path_param(c, "id") {
       Some(s) => s,
       None => "",

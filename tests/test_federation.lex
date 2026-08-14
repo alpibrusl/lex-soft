@@ -68,7 +68,7 @@ fn ping_capability() -> cap.Capability {
   cap.inbound("handle", "Reply pong.", { title: "Ping", description: "ping", fields: [sch.required_str("text", [])] })
 }
 
-fn ping_handler(_m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn ping_handler(_m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
   { next_state: tk.TSCompleted, reply: Some(msg.agent_text("pong")), artifacts: [] }
 }
 
@@ -91,7 +91,7 @@ fn dispatch_req(tok :: Str) -> ctx.RawRequest {
 }
 
 # ── mount_agent dispatch auth ────────────────────────────────────────────────
-fn dispatch_missing_token_is_rejected() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn dispatch_missing_token_is_rejected() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -104,7 +104,7 @@ fn dispatch_missing_token_is_rejected() -> [io, time, crypto, random, sql, fs_re
   }
 }
 
-fn dispatch_garbage_token_is_rejected() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn dispatch_garbage_token_is_rejected() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -122,7 +122,7 @@ fn dispatch_garbage_token_is_rejected() -> [io, time, crypto, random, sql, fs_re
 # is registered under a real tenant so this also exercises caller_authorized's
 # tenant-ownership check (#132): the credential's org must match the target
 # agent's own tenant, not just resolve to *some* subject.
-fn dispatch_valid_credential_is_accepted() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn dispatch_valid_credential_is_accepted() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -151,7 +151,7 @@ fn conn_req(body :: Str) -> ctx.RawRequest {
   { body: body, method: "POST", path: "/connections", query: "", headers: map.from_list([]) }
 }
 
-fn onboarding_wrong_signup_token_is_refused() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarding_wrong_signup_token_is_refused() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -172,7 +172,7 @@ fn onboarding_wrong_signup_token_is_refused() -> [io, time, crypto, random, sql,
   }
 }
 
-fn onboarding_missing_signup_token_is_refused() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarding_missing_signup_token_is_refused() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -185,7 +185,7 @@ fn onboarding_missing_signup_token_is_refused() -> [io, time, crypto, random, sq
   }
 }
 
-fn onboarding_correct_signup_token_succeeds() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarding_correct_signup_token_succeeds() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -199,14 +199,14 @@ fn onboarding_correct_signup_token_succeeds() -> [io, time, crypto, random, sql,
 }
 
 # ── onboarding: per-org rate limit ───────────────────────────────────────────
-fn onboarding_rate_limits_after_threshold() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn onboarding_rate_limits_after_threshold() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
       let __m := migrate.run(db)
       let cfg := cfg_requiring_token(bytes.from_str("s"), "")
       let r := fed.mount_federation(router.new(), db, db, cfg)
-      let statuses := list.map(range(21), fn (_i :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Int {
+      let statuses := list.map(range(21), fn (_i :: Int) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Int {
         router.dispatch(r, conn_req(conn_body("rate-limited-org", ""))).status
       })
       let saw_429 := list.fold(statuses, false, fn (acc :: Bool, s :: Int) -> Bool {
@@ -242,7 +242,7 @@ fn find_req(capability :: Str) -> ctx.RawRequest {
   { body: "", method: "GET", path: "/directory/find", query: str.concat("capability=", capability), headers: map.from_list([]) }
 }
 
-fn directory_find_only_returns_matching_orgs() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Result[Unit, Str] {
+fn directory_find_only_returns_matching_orgs() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Result[Unit, Str] {
   match sql.open(":memory:") {
     Err(_) => Err("db open failed"),
     Ok(db) => {
@@ -266,7 +266,7 @@ fn int_str(n :: Int) -> Str {
   jv.stringify(JInt(n))
 }
 
-fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] Unit {
+fn run_all() -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] Unit {
   let results := [dispatch_missing_token_is_rejected(), dispatch_garbage_token_is_rejected(), dispatch_valid_credential_is_accepted(), onboarding_wrong_signup_token_is_refused(), onboarding_missing_signup_token_is_refused(), onboarding_correct_signup_token_succeeds(), onboarding_rate_limits_after_threshold(), directory_find_only_returns_matching_orgs()]
   let failures := list.fold(results, [], fn (acc :: List[Str], r :: Result[Unit, Str]) -> List[Str] {
     match r {
