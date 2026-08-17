@@ -14,7 +14,7 @@ jobs:
       - name: Install Lex toolchain
         run: |
           set -euxo pipefail
-          LEX_VERSION="0.10.10"
+          LEX_VERSION="0.10.11"
           BASE="https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}"
           TARBALL="lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           curl -fsSL -o /tmp/lex.tgz     "${BASE}/${TARBALL}"
@@ -44,6 +44,11 @@ jobs:
 
       - name: Format check
         run: lex fmt --check src/ tests/
+
+      # AGENTS.md must match the pinned toolchain's lex agent-guidelines
+      # (docsync.toml declares it; shared mechanism from lex-lang#747).
+      - name: Generated docs current (doc-sync --check)
+        run: lex doc-sync --check
 
       - name: Run tests
         run: lex test --allow-effects io,time,crypto,random,sql,fs_read,fs_write,net,concurrent,llm,proc,env,approval tests/
@@ -75,7 +80,7 @@ jobs:
       - name: Install Lex toolchain
         run: |
           set -euxo pipefail
-          LEX_VERSION="0.10.10"
+          LEX_VERSION="0.10.11"
           BASE="https://github.com/alpibrusl/lex-lang/releases/download/v${LEX_VERSION}"
           TARBALL="lex-v${LEX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           curl -fsSL -o /tmp/lex.tgz     "${BASE}/${TARBALL}"
