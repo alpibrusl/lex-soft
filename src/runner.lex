@@ -254,8 +254,8 @@ fn find_peer_url(peers :: List[PeerInfo], to_id :: Str) -> Option[Str] {
 # traces of this turn are recorded under it, and only that conversation's turns
 # feed the model (#46 — the fabricate-from-stale-history failure). No contextId
 # from the transport -> fresh random run_id + agent-global history, as before.
-fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
-  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
+  fn (m :: msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
     let tdb := trace_db(b)
     let run_id := if str.is_empty(m.context_id) {
       trace.new_run_id()
@@ -332,7 +332,7 @@ fn make_handler_for_backend(b :: Backend, cfg :: AgentConfig) -> (msg.Message) -
 # Returns a lex-agent Skill handler closure backed by lex-llm.
 # Captures db and cfg; loads peers fresh on every invocation so the
 # relationship graph stays live.
-fn make_handler(db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn make_handler(db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
   make_handler_for_backend(BackendLocal(db), cfg)
 }
 
@@ -345,7 +345,7 @@ fn make_handler(db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, cry
 #   2. conc.spawn(fn () -> ... { outbox.flush_loop(local_db, platform_url, 500) })
 #   3. pclient.register(client, id, kind, name, inbox_url, capabilities)
 #   4. mount the handler returned here into your lex-agent srv.AgentDef
-fn make_handler_remote(client :: pclient.PlatformClient, local_db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc] srv.HandlerOutcome {
+fn make_handler_remote(client :: pclient.PlatformClient, local_db :: Db, cfg :: AgentConfig) -> (msg.Message) -> [io, time, crypto, random, sql, fs_read, fs_write, net, concurrent, llm, proc, approval] srv.HandlerOutcome {
   make_handler_for_backend(BackendRemote({ client: client, local_db: local_db }), cfg)
 }
 
