@@ -41,22 +41,16 @@ capability that makes automating it trustworthy.
 
 lex-soft is the **interactions-between-companies** layer — its counterpart on
 the single-company side is [lex-loom](https://github.com/alpibrusl/lex-loom),
-which runs one company's own build/operate loop. The two already share a real
-piece of mechanism: `src/ctl.lex` mounts
-[`lex-ctl`](https://github.com/alpibrusl/lex-ctl), the domain-agnostic
-proposed-effect contract/verify kernel loom built for its own Operate loop —
-lex-soft is a deliberate second consumer, chosen specifically to prove the
-kernel's API stays domain-agnostic (see
-[`docs/design/ctl-kernel-sketch.md`](docs/design/ctl-kernel-sketch.md)).
+which runs one company's own build/operate loop, shares the
+[`lex-ctl`](https://github.com/alpibrusl/lex-ctl) kernel with lex-soft, and
+now consumes lex-soft directly: loom companies register outward-facing roles
+on this mesh and settle revenue through the evidence-gated settlement here.
 
-lex-soft has no dependency on [lex-os](https://github.com/alpibrusl/lex-os)
-today. Its host-mounted tool modules are already effect-scoped narrowly
-(`[net, io, proc]`, no direct `sql`), which maps cleanly onto lex-os's grant
-model if agent workloads are ever run inside its sandboxed boxes — that wiring
-doesn't exist yet, it just isn't precluded by anything here.
-
-For the full picture of how lex-soft, lex-loom, lex-ctl, and lex-os fit
-together, see [lex-lang's ecosystem model](https://github.com/alpibrusl/lex-lang/blob/main/docs/design/ecosystem-model.md).
+Which integrations are wired vs. designed vs. not started — including
+lex-soft's (non-)relationship to
+[lex-os](https://github.com/alpibrusl/lex-os) — is maintained in ONE place:
+[lex-lang's ecosystem model](https://github.com/alpibrusl/lex-lang/blob/main/docs/design/ecosystem-model.md).
+This README deliberately does not restate that status table.
 
 ## Capabilities (mechanism, host-mounted)
 
