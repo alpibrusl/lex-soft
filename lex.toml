@@ -1,6 +1,6 @@
 [package]
 name        = "lex-soft"
-version     = "0.2.0"
+version     = "0.2.1"
 lex         = "0.10.18"
 description = "LLM-agent platform — registry, relationship graph, resolver, runner."
 license     = "EUPL-1.2"
